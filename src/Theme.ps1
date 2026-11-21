@@ -2156,7 +2156,10 @@ function Get-AppearanceXaml {
       <TextBlock x:Name="editor_error" Foreground="{DynamicResource R.DangerText}" FontSize="12" TextWrapping="Wrap" Margin="0,8,0,0" Visibility="Collapsed"/>
     </StackPanel>
 
-    <StackPanel Grid.Row="1" Grid.Column="2">
+    <!-- Moved down as Paramètres scrolls, so that it stays in view beside the colors (Update-EditorPreviewPlace): a move
+         drawn only, which leaves the layout, the tab order and the focus as they are. -->
+    <StackPanel x:Name="editor_preview_column" Grid.Row="1" Grid.Column="2" VerticalAlignment="Top">
+      <StackPanel.RenderTransform><TranslateTransform/></StackPanel.RenderTransform>
       <TextBlock Style="{StaticResource Txt.Label}" Text="Aperçu" Margin="0,0,0,6"/>
       <!-- One mock-up, of the mode in use at first; a color changed in Couleurs shows it in that color's mode. -->
       $(Get-PickXaml @(@('editor_preview_light', (Tr 'Clair')), @('editor_preview_dark', (Tr 'Sombre'))))
@@ -2408,6 +2411,12 @@ function Connect-AppearancePanel($Root) {
     $Root.FindName('editor_cancel').Add_Click({ Show-ThemeGallery })
     $Root.FindName('editor_back').Add_Click({ Show-ThemeGallery })
     # Entrée saves the theme, instead of reaching the window's default button (Rechercher).
+    # The preview follows the scrolling, and the editor's height (Couleurs unfolded, the text's size): both change the
+    # scrolled extent. The scrolling of a list inside (the fonts') reaches here too, and is left out.
+    $Root.FindName('settings_scroll').Add_ScrollChanged({
+        param($scroll, $e)
+        if ($e.OriginalSource -eq $scroll) { Update-EditorPreviewPlace }
+    })
     $Root.FindName('editor_page').Add_PreviewKeyDown({
         $e = $args[1]
         if ($e.Key -eq 'Return') {
@@ -2655,6 +2664,27 @@ function Show-ThemeGallery {
     $root = $script:AppearanceRoot
     $root.FindName('editor_page').Visibility = 'Collapsed'
     $root.FindName('gallery_page').Visibility = 'Visible'
+    $root.FindName('editor_preview_column').RenderTransform.Y = 0
+}
+
+function Update-EditorPreviewPlace {
+    # Keeps the editor's preview in view while Paramètres scrolls (#5): once its top has scrolled past the top of the
+    # visible area, it's moved down by as much (with a small gap), but never below the end of the editor's colors, so
+    # that it stays beside them and off Enregistrer / Annuler. In a window shorter than the preview, its top stays in
+    # view.
+    $root = $script:AppearanceRoot
+    $editor = $root.FindName('editor_page')
+    $column = $root.FindName('editor_preview_column')
+    $move = $column.RenderTransform
+    if (-not $editor.IsVisible) {
+        $move.Y = 0
+        return
+    }
+    $scroll = $root.FindName('settings_scroll')
+    # Where the column's own place is in the visible area: TransformToVisual counts the move, taken off again.
+    $top = $column.TransformToVisual($scroll).Transform([System.Windows.Point]::new(0, 0)).Y - $move.Y
+    $room = [Math]::Max(0, $editor.RowDefinitions[1].ActualHeight - $column.ActualHeight)
+    $move.Y = [Math]::Max(0, [Math]::Min(12 - $top, $room))
 }
 
 function Open-ThemeEditor([string]$Id, [string]$FromPreset) {

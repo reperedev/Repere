@@ -28,7 +28,7 @@ param(
 
     # Only these sessions (each starts Repère afresh), e.g. -Only UserDetail, GroupPage for a change to the Propriétés
     # windows; all of them without it.
-    [ValidateSet('Search', 'Address', 'Unreachable', 'Parallel', 'Actions', 'Remote', 'WinRMError', 'Shadow', 'Specs', 'SpecsDelay', 'MoveRootsLong', 'SingleDomain', 'Appearance', 'Column', 'Restart', 'Safeguards', 'Advanced', 'SearchMemory', 'UserPage', 'UserDetail', 'GroupPage', 'Settings', 'SettingsSave', 'Density', 'Limit', 'NextName', 'Copy', 'CopyButton', 'UnusedBox', 'BitLocker')]
+    [ValidateSet('Search', 'Address', 'Unreachable', 'Parallel', 'Actions', 'Remote', 'WinRMError', 'Shadow', 'Specs', 'SpecsDelay', 'MoveRootsLong', 'SingleDomain', 'Appearance', 'ThemePreview', 'Column', 'Restart', 'Safeguards', 'Advanced', 'SearchMemory', 'UserPage', 'UserDetail', 'GroupPage', 'Settings', 'SettingsSave', 'Density', 'Limit', 'NextName', 'Copy', 'CopyButton', 'UnusedBox', 'BitLocker')]
     [string[]]$Only,
 
     # Repère in strict mode (REPERE_STRICT): what strict mode refuses fails the checks that reach it.
@@ -8052,6 +8052,52 @@ function Test-GalleryKept {
     Test-GalleryShown
 }
 
+function Test-ThemePreview {
+    # #5: the theme editor's preview stays in view while Paramètres scrolls through the colors, and never reaches
+    # Enregistrer. Its own session: the Appearance one is long, and this needs only a new theme.
+    Invoke-Check "Apparence: scrolled to the last color, the editor's preview is still in view, above Enregistrer, at the window's size and its smallest" {
+        param($problems)
+        $settingsWindow = Open-SettingsSection 'appearance'
+        Open-Editor 'create_theme'
+        Invoke-PopupControl 'editor_colors_toggle'
+        $scrollPart = Get-DialogPart $settingsWindow 'settings_scroll'
+        $scroll = $scrollPart.GetCurrentPattern([System.Windows.Automation.ScrollPattern]::Pattern)
+        $noScroll = [System.Windows.Automation.ScrollPattern]::NoScroll
+        $note = [System.Windows.Automation.PropertyCondition]::new($AE::NameProperty, "L'accent est ajusté dans chaque mode pour rester visible.")
+        $place = { (Get-DialogPart $settingsWindow 'editor_preview_light').Current.BoundingRectangle.Top }
+        $atTop = & $place
+        $check = {
+            param([string]$When)
+            if (-not $scroll.Current.VerticallyScrollable) { $problems.Add("$When, the editor doesn't scroll"); return }
+            $scroll.SetScrollPercent($noScroll, 100)
+            Start-Sleep -Milliseconds 400
+            $view = $scrollPart.Current.BoundingRectangle
+            $top = & $place
+            $mockUp = (Get-DialogPart $settingsWindow 'pv_buttontext').Current.BoundingRectangle
+            $last = (Get-DialogPart $settingsWindow 'editor_color_DangerBorder_dark').Current.BoundingRectangle
+            $end = $settingsWindow.FindFirst($Descendants, $note).Current.BoundingRectangle
+            $save = (Get-DialogPart $settingsWindow 'editor_save').Current.BoundingRectangle
+            if ($last.Bottom -gt $view.Bottom) { $problems.Add("$When, scrolled to the end, the last color is $([int]($last.Bottom - $view.Bottom)) px below the visible area") }
+            if ($top -lt $view.Top) { $problems.Add("$When, the preview starts $([int]($view.Top - $top)) px above the visible area") }
+            if ($mockUp.Bottom -gt $view.Bottom) { $problems.Add("$When, the preview's mock-up ends $([int]($mockUp.Bottom - $view.Bottom)) px below the visible area") }
+            if ($end.Bottom -gt $save.Top) { $problems.Add("$When, the preview reaches $([int]($end.Bottom - $save.Top)) px into Enregistrer") }
+            # Back at the top, it's back in its place.
+            $scroll.SetScrollPercent($noScroll, 0)
+            Start-Sleep -Milliseconds 400
+            $back = & $place
+            if ([Math]::Abs($back - $atTop) -gt 1) { $problems.Add("$When, scrolled back up, the preview is $([int]($back - $atTop)) px from its place") }
+        }
+        & $check 'at the window''s size'
+        # At its smallest (Paramètres stops at its minimum).
+        $size = $settingsWindow.Current.BoundingRectangle
+        $settingsWindow.GetCurrentPattern([System.Windows.Automation.TransformPattern]::Pattern).Resize($size.Width, 100)
+        Start-Sleep -Milliseconds 500
+        & $check 'at its smallest'
+        Invoke-PopupControl 'editor_cancel'
+        if (-not (Test-GalleryShown)) { $problems.Add("Annuler didn't go back to the gallery") }
+    }
+}
+
 function Test-Appearance {
     # Restarts the app, so it runs last. The settings go to the test's own APPDATA ($appearanceFile), still empty here:
     # nothing has been saved yet. The checks follow each other: a theme of one's own is created, kept over a restart,
@@ -8876,6 +8922,13 @@ try {
         Remove-Item $appearanceFile -ErrorAction SilentlyContinue
         Start-App
         Test-Appearance
+        Stop-App
+    }
+
+    if (Test-Session 'ThemePreview') {
+        # The theme editor's preview, kept in view while the colors scroll (#5).
+        Start-App
+        Test-ThemePreview
         Stop-App
     }
 

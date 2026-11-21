@@ -16,6 +16,9 @@
 ### Utilisateurs et Groupes
 - **Propriétés** : au-delà de 10 groupes, **Groupes** (et **Membre de** pour un groupe) a une case pour filtrer par nom ou description, accents ou non. Les cases cochées le restent.
 
+### Paramètres
+- **Apparence**, thèmes personnalisés : **l'aperçu reste visible** pendant qu'on fait défiler les couleurs, à côté d'elles, au lieu de rester en haut de la page.
+
 ## 0.15.0 — 2026-11-19
 
 ### Ordinateurs, Utilisateurs et Groupes
