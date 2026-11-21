@@ -6,6 +6,7 @@
 - **L'écran de démarrage et la fenêtre s'ouvrent toujours au centre de l'écran** d'où Repère est lancé (celui de la souris), et non plus là où la fenêtre a été fermée. La fenêtre garde sa taille, et s'ouvre agrandie si elle l'était.
 - **La fenêtre s'ouvre devant les autres programmes même après avoir déplacé l'écran de démarrage** : elle s'ouvrait derrière, sous un programme agrandi.
 - **L'info-bulle du temps de recherche** (« en 1 234 ms ») est un petit tableau : un domaine par ligne, les temps alignés en colonnes, même avec un long nom de domaine.
+- **Nouveautés** : au premier lancement d'une nouvelle version, une fenêtre dit ce qu'elle apporte (ce journal, depuis la dernière version utilisée). **Ne plus afficher après une mise à jour** l'arrête ; **Paramètres › Nouveautés** l'ouvre quand on veut, toutes les versions listées.
 
 ### Ordinateurs
 - **Prochain nom…** et **Paramètres › SCCM** disent en une ligne quand la console Configuration Manager doit être mise à jour pour la version du site, au lieu d'un long message d'erreur.

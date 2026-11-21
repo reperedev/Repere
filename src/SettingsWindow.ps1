@@ -165,6 +165,10 @@ function Get-SettingsWindowXaml {
         $($nav -join "`n        ")
       </ListBox>
       <TextBlock x:Name="settings_version" Text="Repère $($script:RepereVersion)" Style="{StaticResource Txt.Faint}" FontSize="12" Margin="10,18,0,0"/>
+      <!-- What each version brought (Show-ChangelogWindow), when CHANGELOG.md is there. -->
+      <TextBlock x:Name="settings_changelog" FontSize="12" Margin="10,4,10,0">
+        <Hyperlink x:Name="settings_changelog_link" AutomationProperties.AutomationId="settings_changelog_link">Nouveautés</Hyperlink>
+      </TextBlock>
       <!-- A newer Repère is out (Update-ReleaseNotice): which, with a link to its page. -->
       <TextBlock x:Name="settings_update" Visibility="Collapsed" FontSize="12" Margin="10,4,10,0" TextWrapping="Wrap">
         <Hyperlink x:Name="settings_update_link" AutomationProperties.AutomationId="settings_update_link"><Run x:Name="settings_update_text"/></Hyperlink>
@@ -369,6 +373,8 @@ function Initialize-SettingsWindow {
     Connect-SccmSetting $root
     $root.FindName('settings_update_link').Add_Click({ if ($script:NewerRelease) { Start-Process $script:NewerRelease.Url } })
     Update-ReleaseNotice
+    $root.FindName('settings_changelog').Visibility = ConvertTo-Visibility (Test-Path -LiteralPath $script:ChangelogPath)
+    $root.FindName('settings_changelog_link').Add_Click({ Show-ChangelogWindow @(Read-ChangelogEntry $script:ChangelogPath) $script:Settings.Window })
 
     $nav = $root.FindName('settings_nav')
     # Leaving SCCM or Redémarrage saves what was typed there (what can't be stays typed, its problem shown).

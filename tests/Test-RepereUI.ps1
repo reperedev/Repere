@@ -28,7 +28,7 @@ param(
 
     # Only these sessions (each starts Repère afresh), e.g. -Only UserDetail, GroupPage for a change to the Propriétés
     # windows; all of them without it.
-    [ValidateSet('Search', 'Address', 'Unreachable', 'Parallel', 'Actions', 'Remote', 'WinRMError', 'Shadow', 'Specs', 'SpecsDelay', 'MoveRootsLong', 'SingleDomain', 'Appearance', 'Column', 'Restart', 'Safeguards', 'Advanced', 'SearchMemory', 'UserPage', 'UserDetail', 'GroupPage', 'Settings', 'SettingsSave', 'Density', 'Limit', 'NextName', 'Copy', 'CopyButton', 'UnusedBox', 'BitLocker')]
+    [ValidateSet('Search', 'Address', 'Unreachable', 'Parallel', 'Actions', 'Remote', 'WinRMError', 'Shadow', 'Specs', 'SpecsDelay', 'MoveRootsLong', 'SingleDomain', 'Appearance', 'Column', 'Restart', 'Safeguards', 'Advanced', 'SearchMemory', 'UserPage', 'UserDetail', 'GroupPage', 'Settings', 'SettingsSave', 'Density', 'Limit', 'NextName', 'Copy', 'CopyButton', 'UnusedBox', 'BitLocker', 'Changelog')]
     [string[]]$Only,
 
     # Repère in strict mode (REPERE_STRICT): what strict mode refuses fails the checks that reach it.
@@ -7329,6 +7329,70 @@ function Get-DensityChoice($SettingsWindow) {
     }) -join ', '
 }
 
+function Get-ChangelogHeading($Dialog) {
+    # The versions Nouveautés lists, by their headings (« 0.15.0 — 2026-11-19 »).
+    $isText = [System.Windows.Automation.PropertyCondition]::new($AE::ControlTypeProperty, [System.Windows.Automation.ControlType]::Text)
+    @($Dialog.FindAll($Descendants, $isText) | ForEach-Object { $_.Current.Name } | Where-Object { $_ -match '^\d+\.\d+\.\d+ — ' })
+}
+
+function Test-ChangelogClosed($Owner) {
+    # Whether Nouveautés, over $Owner, has closed within 3 s. A window: Paramètres' link has the same name.
+    $condition = [System.Windows.Automation.AndCondition]::new(
+        [System.Windows.Automation.PropertyCondition]::new($AE::ControlTypeProperty, [System.Windows.Automation.ControlType]::Window),
+        [System.Windows.Automation.PropertyCondition]::new($AE::NameProperty, 'Nouveautés'))
+    for ($i = 0; $i -lt 20; $i++) {
+        if (-not $Owner.FindFirst([System.Windows.Automation.TreeScope]::Children, $condition)) { return $true }
+        Start-Sleep -Milliseconds 150
+    }
+    $false
+}
+
+function Test-Changelog([string]$Seen, [string]$Current) {
+    # #9: started after an update ($Seen, the version seen before, given by the session), Nouveautés opens with the
+    # versions since; « Ne plus afficher » is saved in parametres.json, and its X closes it. Paramètres' « Nouveautés »
+    # opens it again, every version listed, its box as saved.
+    $settingsFile = Join-Path $env:APPDATA 'Repere\parametres.json'
+    Invoke-Check "Nouveautés: opens at start after an update with the versions since the one seen; its box is saved, and its X closes it" {
+        param($problems)
+        $dialog = Wait-Dialog 'Nouveautés'
+        if ($ScreenshotDirectory) { Save-Screenshot 'nouveautes' $dialog }
+        $headings = @(Get-ChangelogHeading $dialog)
+        if ($headings.Count -ne 1 -or $headings[0] -notlike "$Current — *") { $problems.Add("after $Seen, it lists: $($headings -join ', '); expected $Current only") }
+        $close = Get-DialogPart $dialog 'caption_close'
+        if (-not $close) { $problems.Add('it has no X') }
+        $toggle = (Get-DialogPart $dialog 'changelog_hide').GetCurrentPattern([System.Windows.Automation.TogglePattern]::Pattern)
+        if ($toggle.Current.ToggleState -ne 'Off') { $problems.Add("« Ne plus afficher » is $($toggle.Current.ToggleState) at first") }
+        $toggle.Toggle()
+        $saved = $null
+        for ($i = 0; $i -lt 20; $i++) {
+            $saved = if (Test-Path $settingsFile) { Get-Content $settingsFile -Raw | ConvertFrom-Json }
+            if ($saved -and $saved.PSObject.Properties['ShowChangelog'] -and $saved.ShowChangelog -eq $false) { break }
+            Start-Sleep -Milliseconds 150
+        }
+        if (-not $saved -or -not $saved.PSObject.Properties['ShowChangelog'] -or $saved.ShowChangelog -ne $false -or $saved.SeenVersion -ne $Current) {
+            $problems.Add("parametres.json holds: $(if ($saved) { $saved | ConvertTo-Json -Compress })")
+        }
+        if ($close) {
+            Invoke-Element $close
+            if (-not (Test-ChangelogClosed $window)) { $problems.Add("its X didn't close it") }
+        }
+    }
+
+    Invoke-Check "Nouveautés: Paramètres' link opens it again, every version listed, its box as saved" {
+        param($problems)
+        $settingsWindow = Open-SettingsSection 'shortcuts'
+        Invoke-Element (Get-DialogPart $settingsWindow 'settings_changelog_link')
+        $dialog = Wait-OwnedDialog $settingsWindow 'Nouveautés'
+        $headings = @(Get-ChangelogHeading $dialog)
+        if ($headings.Count -lt 3 -or $headings[0] -notlike "$Current — *" -or -not ($headings -like "$Seen — *")) { $problems.Add("it lists: $($headings -join ', ')") }
+        $state = (Get-DialogPart $dialog 'changelog_hide').GetCurrentPattern([System.Windows.Automation.TogglePattern]::Pattern).Current.ToggleState
+        if ($state -ne 'On') { $problems.Add("« Ne plus afficher » is $state, saved as checked") }
+        Invoke-Element (Get-DialogPart $dialog 'dialog_cancel')
+        if (-not (Test-ChangelogClosed $settingsWindow)) { $problems.Add("Fermer didn't close it") }
+        $settingsWindow.GetCurrentPattern([System.Windows.Automation.WindowPattern]::Pattern).Close()
+    }
+}
+
 function Test-Density {
     # Densité, in a session of its own from no apparence.json: each density sets the grids' rows and the search row,
     # not the text, and is saved (Normale, the default, isn't); Texte's Par défaut leaves it; it comes back after a
@@ -9033,6 +9097,16 @@ try {
         Test-SettingsWindow
         Stop-App
         $env:REPERE_UPDATE_RELEASE = $null
+    }
+
+    if (Test-Session 'Changelog') {
+        # Nouveautés (#9): started as after an update from the version before this one (CHANGELOG.md's second entry).
+        $changelogVersions = @(Select-String -LiteralPath (Join-Path (Split-Path $PSScriptRoot) 'CHANGELOG.md') -Pattern '^## (\d+\.\d+\.\d+)\b' | ForEach-Object { $_.Matches[0].Groups[1].Value })
+        $env:REPERE_CHANGELOG_SEEN = $changelogVersions[1]
+        Start-App
+        Test-Changelog $changelogVersions[1] $changelogVersions[0]
+        Stop-App
+        $env:REPERE_CHANGELOG_SEEN = $null
     }
 
     if (Test-Session 'SettingsSave') {
