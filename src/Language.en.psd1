@@ -664,9 +664,11 @@
         @('Retirer {0}', 'Remove {0}'),
         # Changelog.ps1, and Paramètres' link to it
         @('Nouveautés', 'What''s new'),
-        @('Ne plus afficher après une mise à jour', 'Don''t show after an update'),
+        @('Ne plus afficher', 'Don''t show again'),
+        @('Voir le détail', 'See the details'),
+        @('et 1 autre', 'and 1 more'),
         @('Repère {0}', 'Repère {0}'),
-        @('Repère {0}, journal en français', 'Repère {0}, changelog in French'),
+        @('Repère {0}, journal en français', 'Repère {0} · notes in French'),
         # ColumnFilter.ps1
         @('Filtrer cette colonne', 'Filter this column'),
         @('Filtrer cette colonne…', 'Filter this column…'),

@@ -82,9 +82,6 @@ trap {
 # as the other files load, and the reasons to stop below, are in it. A -Language Repère doesn't have is refused below,
 # in the language chosen in Paramètres.
 . "$PSScriptRoot\Settings.ps1"
-# Whether Repère was used here before this start, read before the language saves its choice: Nouveautés shows nothing to
-# a new install (Changelog.ps1).
-$script:SettingsBeforeRun = [bool](Get-ChildItem -LiteralPath $script:SettingsFolder -Filter *.json -ErrorAction SilentlyContinue)
 . "$PSScriptRoot\Language.ps1"
 Initialize-Language $(if ($Language -in 'fr', 'en') { $Language } else { '' })
 

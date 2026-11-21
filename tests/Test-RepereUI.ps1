@@ -7329,14 +7329,15 @@ function Get-DensityChoice($SettingsWindow) {
     }) -join ', '
 }
 
-function Get-ChangelogHeading($Dialog) {
-    # The versions Nouveautés lists, by their headings (« 0.15.0 — 2026-11-19 »).
+function Get-ChangelogText($Dialog) {
+    # Every text Nouveautés shows: its subtitle, its sections' names, its headlines, « et 6 autres ».
     $isText = [System.Windows.Automation.PropertyCondition]::new($AE::ControlTypeProperty, [System.Windows.Automation.ControlType]::Text)
-    @($Dialog.FindAll($Descendants, $isText) | ForEach-Object { $_.Current.Name } | Where-Object { $_ -match '^\d+\.\d+\.\d+ — ' })
+    @($Dialog.FindAll($Descendants, $isText) | ForEach-Object { $_.Current.Name })
 }
 
 function Test-ChangelogClosed($Owner) {
-    # Whether Nouveautés, over $Owner, has closed within 3 s. A window: Paramètres' link has the same name.
+    # Whether Nouveautés, over $Owner (the main window), has closed within 3 s. A window: Paramètres' link has the same
+    # name.
     $condition = [System.Windows.Automation.AndCondition]::new(
         [System.Windows.Automation.PropertyCondition]::new($AE::ControlTypeProperty, [System.Windows.Automation.ControlType]::Window),
         [System.Windows.Automation.PropertyCondition]::new($AE::NameProperty, 'Nouveautés'))
@@ -7347,17 +7348,49 @@ function Test-ChangelogClosed($Owner) {
     $false
 }
 
-function Test-Changelog([string]$Seen, [string]$Current) {
-    # #9: started after an update ($Seen, the version seen before, given by the session), Nouveautés opens with the
-    # versions since; « Ne plus afficher » is saved in parametres.json, and its X closes it. Paramètres' « Nouveautés »
-    # opens it again, every version listed, its box as saved.
+function Test-ChangelogContent($Dialog, [string]$Current, [string[]]$Sections, $Problems) {
+    # Nouveautés shows $Current's notes only: its version in the subtitle, its sections ($Sections, from CHANGELOG.md)
+    # with headlines, and Voir le détail.
+    $texts = @(Get-ChangelogText $Dialog)
+    if (-not ($texts -like "Repère $Current — *")) { $Problems.Add("its subtitle isn't Repère ${Current}: $($texts[0..1] -join ' / ')") }
+    $missing = @($Sections | Where-Object { $_ -notin $texts })
+    if ($missing) { $Problems.Add("sections missing: $($missing -join ', ')") }
+    $other = @($texts | Where-Object { $_ -match '^(Repère )?\d+\.\d+\.\d+ — ' -and $_ -notlike "Repère $Current — *" })
+    if ($other) { $Problems.Add("it shows another version: $($other -join ', ')") }
+    if ($texts.Count -lt $Sections.Count * 2 + 1) { $Problems.Add("too few headlines: $($texts -join ' | ')") }
+    if (-not (Get-DialogPart $Dialog 'changelog_detail')) { $Problems.Add('it has no Voir le détail') }
+}
+
+function Test-ChangelogFit {
+    # At Très grande in Verdana bold (the widest text), Nouveautés' box, Voir le détail and Fermer stay in the window,
+    # one after the other. Repère starts again with that apparence.json; the session removes it after.
+    Restart-App '{ "TextScale": 1.3, "FontFamily": "Verdana", "FontWeight": "Bold" }'
+    Invoke-Check "Nouveautés at Très grande, Verdana gras: its box, Voir le détail and Fermer fit in it" {
+        param($problems)
+        $dialog = Wait-Dialog 'Nouveautés'
+        if ($ScreenshotDirectory) { Save-Screenshot 'nouveautes-tres-grande' $dialog }
+        $box = $dialog.Current.BoundingRectangle
+        $right = $null
+        foreach ($id in 'changelog_hide', 'changelog_detail', 'dialog_cancel') {
+            $rect = (Get-DialogPart $dialog $id).Current.BoundingRectangle
+            if ($rect.Left -lt $box.Left + 8 -or $rect.Right -gt $box.Right - 8 -or $rect.Bottom -gt $box.Bottom) { $problems.Add("$id spans $($rect.Left)-$($rect.Right), the window $($box.Left)-$($box.Right)") }
+            if ($null -ne $right -and $rect.Left -lt $right) { $problems.Add("$id overlaps the one before it") }
+            $right = $rect.Right
+        }
+        Invoke-Element (Get-DialogPart $dialog 'dialog_cancel')
+    }
+}
+
+function Test-Changelog([string]$Current, [string[]]$Sections) {
+    # #9: started after an update (the session gives the version seen before), Nouveautés opens with this version's
+    # headlines only; « Ne plus afficher » is saved in parametres.json, and its X closes it. Paramètres' « Nouveautés »
+    # opens it again, one window however often it's clicked, its box as saved.
     $settingsFile = Join-Path $env:APPDATA 'Repere\parametres.json'
-    Invoke-Check "Nouveautés: opens at start after an update with the versions since the one seen; its box is saved, and its X closes it" {
+    Invoke-Check "Nouveautés: opens at start after an update with this version's headlines; its box is saved, and its X closes it" {
         param($problems)
         $dialog = Wait-Dialog 'Nouveautés'
         if ($ScreenshotDirectory) { Save-Screenshot 'nouveautes' $dialog }
-        $headings = @(Get-ChangelogHeading $dialog)
-        if ($headings.Count -ne 1 -or $headings[0] -notlike "$Current — *") { $problems.Add("after $Seen, it lists: $($headings -join ', '); expected $Current only") }
+        Test-ChangelogContent $dialog $Current $Sections $problems
         $close = Get-DialogPart $dialog 'caption_close'
         if (-not $close) { $problems.Add('it has no X') }
         $toggle = (Get-DialogPart $dialog 'changelog_hide').GetCurrentPattern([System.Windows.Automation.TogglePattern]::Pattern)
@@ -7378,17 +7411,25 @@ function Test-Changelog([string]$Seen, [string]$Current) {
         }
     }
 
-    Invoke-Check "Nouveautés: Paramètres' link opens it again, every version listed, its box as saved" {
+    Invoke-Check "Nouveautés: Paramètres' link opens it again, once however often it's clicked, its box as saved" {
         param($problems)
         $settingsWindow = Open-SettingsSection 'shortcuts'
-        Invoke-Element (Get-DialogPart $settingsWindow 'settings_changelog_link')
-        $dialog = Wait-OwnedDialog $settingsWindow 'Nouveautés'
-        $headings = @(Get-ChangelogHeading $dialog)
-        if ($headings.Count -lt 3 -or $headings[0] -notlike "$Current — *" -or -not ($headings -like "$Seen — *")) { $problems.Add("it lists: $($headings -join ', ')") }
+        $link = Get-DialogPart $settingsWindow 'settings_changelog_link'
+        Invoke-Element $link
+        $null = Wait-Dialog 'Nouveautés'
+        Invoke-Element $link
+        Start-Sleep -Milliseconds 600
+        $isChangelog = [System.Windows.Automation.AndCondition]::new(
+            [System.Windows.Automation.PropertyCondition]::new($AE::ControlTypeProperty, [System.Windows.Automation.ControlType]::Window),
+            [System.Windows.Automation.PropertyCondition]::new($AE::NameProperty, 'Nouveautés'))
+        $open = @($window.FindAll([System.Windows.Automation.TreeScope]::Children, $isChangelog)).Count
+        if ($open -ne 1) { $problems.Add("two clicks leave $open windows open") }
+        $dialog = Wait-Dialog 'Nouveautés'
+        Test-ChangelogContent $dialog $Current $Sections $problems
         $state = (Get-DialogPart $dialog 'changelog_hide').GetCurrentPattern([System.Windows.Automation.TogglePattern]::Pattern).Current.ToggleState
         if ($state -ne 'On') { $problems.Add("« Ne plus afficher » is $state, saved as checked") }
         Invoke-Element (Get-DialogPart $dialog 'dialog_cancel')
-        if (-not (Test-ChangelogClosed $settingsWindow)) { $problems.Add("Fermer didn't close it") }
+        if (-not (Test-ChangelogClosed $window)) { $problems.Add("Fermer didn't close it") }
         $settingsWindow.GetCurrentPattern([System.Windows.Automation.WindowPattern]::Pattern).Close()
     }
 }
@@ -9100,12 +9141,18 @@ try {
     }
 
     if (Test-Session 'Changelog') {
-        # Nouveautés (#9): started as after an update from the version before this one (CHANGELOG.md's second entry).
-        $changelogVersions = @(Select-String -LiteralPath (Join-Path (Split-Path $PSScriptRoot) 'CHANGELOG.md') -Pattern '^## (\d+\.\d+\.\d+)\b' | ForEach-Object { $_.Matches[0].Groups[1].Value })
+        # Nouveautés (#9): started as after an update from the version before this one (CHANGELOG.md's second entry);
+        # it shows the first entry's sections.
+        $changelogLines = [System.IO.File]::ReadAllLines((Join-Path (Split-Path $PSScriptRoot) 'CHANGELOG.md'))
+        $changelogStarts = @(for ($i = 0; $i -lt $changelogLines.Count; $i++) { if ($changelogLines[$i] -match '^## \d+\.\d+\.\d+\b') { $i } })
+        $changelogVersions = @($changelogStarts | ForEach-Object { [regex]::Match($changelogLines[$_], '\d+\.\d+\.\d+').Value })
+        $changelogSections = @($changelogLines[$changelogStarts[0]..$changelogStarts[1]] | Where-Object { $_ -match '^### ' } | ForEach-Object { $_.Substring(4).Trim() })
         $env:REPERE_CHANGELOG_SEEN = $changelogVersions[1]
         Start-App
-        Test-Changelog $changelogVersions[1] $changelogVersions[0]
+        Test-Changelog $changelogVersions[0] $changelogSections
+        Test-ChangelogFit
         Stop-App
+        Remove-Item $appearanceFile -ErrorAction SilentlyContinue
         $env:REPERE_CHANGELOG_SEEN = $null
     }
 

@@ -1,10 +1,16 @@
-﻿# Nouveautés: what the versions since the last start brought, read from CHANGELOG.md (in the zip, beside src), in a
-# window of its own once the main window shows, the first time a newer Repère starts (#9). Its box « Ne plus afficher »
-# stops that (ShowChangelog in parametres.json); Paramètres' « Nouveautés » opens it whenever, every version listed.
-# Dot-sourced by the main script, after SettingsWindow.ps1.
+﻿# Nouveautés: what this version brought, as the headlines of its CHANGELOG.md entry (in the zip, beside src), in a
+# window of its own once the main window shows, the first time a newer Repère starts (#9). Each section lists its
+# first points' headlines and how many others it has; « Voir le détail » opens the version's release on GitHub, which
+# is that whole entry. Its box « Ne plus afficher » stops it (ShowChangelog in parametres.json); Paramètres'
+# « Nouveautés » opens it whenever. Dot-sourced by the main script, after SettingsWindow.ps1.
 
 $script:ChangelogPath = Join-Path (Split-Path $PSScriptRoot) 'CHANGELOG.md'
 $script:ChangelogSettingPath = Get-SettingPath 'parametres.json'
+$script:ChangelogReleaseUrl = 'https://github.com/reperedev/Repere/releases/tag/v{0}'
+# The headlines a section lists; « et 6 autres » says how many more it has.
+$script:ChangelogShown = 3
+# The window open (Show-ChangelogWindow), if one is.
+$script:ChangelogWindow = $null
 
 $script:ChangelogXaml = @'
 <DockPanel xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation" xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
@@ -27,10 +33,11 @@ $script:ChangelogXaml = @'
   </Border>
   <Border DockPanel.Dock="Bottom" Background="{DynamicResource R.Chrome}" BorderBrush="{DynamicResource R.Border}" BorderThickness="0,1,0,0" Padding="16,12">
     <Grid>
-      <Grid.ColumnDefinitions><ColumnDefinition Width="*"/><ColumnDefinition Width="Auto"/></Grid.ColumnDefinitions>
+      <Grid.ColumnDefinitions><ColumnDefinition Width="Auto"/><ColumnDefinition Width="Auto"/><ColumnDefinition Width="*"/><ColumnDefinition Width="Auto"/></Grid.ColumnDefinitions>
       <!-- Saved as it's clicked: the next versions don't open this window at start. Paramètres' « Nouveautés » still does. -->
-      <CheckBox x:Name="changelog_hide" VerticalAlignment="Center" Margin="0,0,14,0" Content="Ne plus afficher après une mise à jour"/>
-      <Button x:Name="dialog_cancel" Grid.Column="1" Style="{StaticResource Btn.Primary}" MinWidth="90" IsDefault="True" IsCancel="True" Content="Fermer"/>
+      <CheckBox x:Name="changelog_hide" VerticalAlignment="Center" Margin="0,0,16,0" Content="Ne plus afficher"/>
+      <TextBlock Grid.Column="1" VerticalAlignment="Center" Margin="0,0,14,0"><Hyperlink x:Name="changelog_detail" AutomationProperties.AutomationId="changelog_detail">Voir le détail</Hyperlink></TextBlock>
+      <Button x:Name="dialog_cancel" Grid.Column="3" Style="{StaticResource Btn.Primary}" MinWidth="90" IsDefault="True" IsCancel="True" Content="Fermer"/>
     </Grid>
   </Border>
   <ScrollViewer x:Name="changelog_scroll" VerticalScrollBarVisibility="Auto" HorizontalScrollBarVisibility="Disabled">
@@ -57,117 +64,156 @@ function Read-ChangelogEntry([string]$Path) {
     }
 }
 
-function Get-ChangelogStart($Saved, [bool]$HadSettings, [string]$Current) {
-    # What to show at start, from parametres.json's SeenVersion and ShowChangelog ($Saved, $null without the file): the
-    # last version seen, whose newer entries to show; '' for a Repère used before that didn't save it (0.15.0 and
-    # earlier), which shows the current version's entry; $null for nothing. A new install (no settings before this
-    # start) shows nothing, nor does the same version again, an older one, or « Ne plus afficher ».
-    if ($Saved -and $Saved.ShowChangelog -eq $false) { return $null }
-    $seen = if ($Saved -and "$($Saved.SeenVersion)" -match '^\d+\.\d+\.\d+$') { [version]$Saved.SeenVersion }
-    if ($seen) {
-        if ($seen -lt [version]$Current) { return $seen.ToString() }
-        return $null
-    }
-    if ($HadSettings) { return '' }
+function Get-ChangelogEntry([string]$Path, [string]$Version) {
+    # $Version's entry in CHANGELOG.md; $null when it has none (a build between releases) or can't be read. Read whole
+    # first: Read-ChangelogEntry gives an entry at its heading, and fills its Lines after.
+    @(Read-ChangelogEntry $Path) | Where-Object Version -EQ ([version]$Version) | Select-Object -First 1
+}
+
+function Get-ChangelogSeen($Saved) {
+    # parametres.json's SeenVersion ($Saved, $null without the file) as a version: $null without one, or with one that
+    # doesn't read as x.y.z (edited by hand, too big for a version).
+    $seen = $null
+    if ($Saved -and "$($Saved.SeenVersion)" -match '^\d+\.\d+\.\d+$' -and [version]::TryParse($Saved.SeenVersion, [ref]$seen)) { return $seen }
     $null
 }
 
-function Select-ChangelogEntry($Entries, [string]$From, [string]$Current) {
-    # The entries newer than $From, up to $Current; only $Current's when $From is ''.
-    $top = [version]$Current
-    @($Entries | Where-Object { $_.Version -le $top -and $(if ($From) { $_.Version -gt [version]$From } else { $_.Version -eq $top }) })
+function Test-ChangelogStart($Saved, [bool]$HadSettings, [string]$Current) {
+    # Whether this start opens Nouveautés: the first start of a version newer than the one seen ($Saved, see
+    # Get-ChangelogSeen), or of this one after a Repère that saved none (0.15.0 and earlier). Not a new install (no
+    # $HadSettings), the same version again, an older one, nor after « Ne plus afficher » (ShowChangelog false).
+    if ($Saved -and $Saved.ShowChangelog -eq $false) { return $false }
+    $seen = Get-ChangelogSeen $Saved
+    if ($seen) { return $seen -lt [version]$Current }
+    $HadSettings
 }
 
-function ConvertFrom-ChangelogLine([string]$Line) {
-    # A line of an entry, as the window shows it: Kind Section (###), Subsection (####), Point (- , Level 1 for a
-    # sub-point), Text (a paragraph; Level 1 for one under a point, indented), with its Text. $null for a blank line.
-    if (-not $Line.Trim()) { return $null }
-    if ($Line -match '^(#{3,4})\s+(.+)$') { return [pscustomobject]@{ Kind = $(if ($Matches[1].Length -eq 3) { 'Section' } else { 'Subsection' }); Level = 0; Text = $Matches[2].Trim() } }
-    if ($Line -match '^( *)[-*]\s+(.+)$') { return [pscustomobject]@{ Kind = 'Point'; Level = [int]($Matches[1].Length -ge 2); Text = $Matches[2].Trim() } }
-    [pscustomobject]@{ Kind = 'Text'; Level = [int]($Line -match '^\s'); Text = $Line.Trim() }
+function Get-ChangelogHeadline([string]$Text) {
+    # A point's headline, kept short: the sentence in bold that starts it (6 words or more), else its first sentence, up
+    # to « . », « : » or « ; », or a comma once it has 8 words; never inside bold, « » or `code`. Past a short name in
+    # bold that starts it (3 words at most): « **Propriétés** : au-delà de 10 groupes… » keeps its words.
+    if ($Text -match '^\*\*([^*]+)\*\*' -and @($Matches[1].Trim() -split '\s+').Count -ge 6) { return $Matches[0] }
+    $quote = 0
+    $code = $false
+    $bold = $false
+    for ($i = 0; $i -lt $Text.Length - 1; $i++) {
+        $char = $Text[$i]
+        if ($char -eq '`') { $code = -not $code; continue }
+        if ($code) { continue }
+        if ($char -eq '*' -and $Text[$i + 1] -eq '*') { $bold = -not $bold; $i++; continue }
+        if ($char -eq [char]0xAB) { $quote++; continue }  # «
+        if ($char -eq [char]0xBB) { $quote--; continue }  # »
+        if ($bold -or $quote -gt 0 -or $Text[$i + 1] -ne ' ') { continue }
+        $end = $char -eq '.' -or ($char -in ':', ';' -and $i -gt 0 -and $Text[$i - 1] -eq ' ')
+        if (-not $end -and $char -ne ',') { continue }
+        $head = $Text.Substring(0, $i).TrimEnd()
+        $words = @(($head -replace '\*\*|`') -split '\s+' | Where-Object { $_ }).Count
+        if ($end -and ($head -notmatch '^\*\*[^*]+\*\*$' -or $words -gt 3)) { return $head }
+        if (-not $end -and $words -ge 8) { return $head }
+    }
+    $Text.Trim().TrimEnd('.')
 }
 
-function ConvertFrom-ChangelogInline([string]$Text) {
-    # A line's Markdown as parts: Kind Bold (**…**), Italic (*…*), Code (`…`) or Plain, each its Text.
+function Get-ChangelogSummary($Entry, [int]$Shown = $script:ChangelogShown) {
+    # The entry as the window shows it: each section (### ; a #### one counts in it) with the Headlines of its first
+    # $Shown points, and how many Others it has. Not the sub-points nor the paragraphs, which are the detail.
+    $section = $null
+    foreach ($line in $Entry.Lines) {
+        if ($line -match '^###\s+(.+)$') {
+            if ($section) { $section }
+            $section = [pscustomobject]@{ Name = $Matches[1].Trim(); Headlines = [System.Collections.Generic.List[string]]::new(); Others = 0 }
+        }
+        elseif ($line -match '^[-*]\s+(.+)$') {
+            if (-not $section) { $section = [pscustomobject]@{ Name = ''; Headlines = [System.Collections.Generic.List[string]]::new(); Others = 0 } }
+            if ($section.Headlines.Count -lt $Shown) { $section.Headlines.Add((Get-ChangelogHeadline $Matches[1])) }
+            else { $section.Others++ }
+        }
+    }
+    if ($section) { $section }
+}
+
+function ConvertFrom-ChangelogInline([string]$Text, [bool]$Bold = $false) {
+    # A line's Markdown as parts, each its Text, its Kind (Italic for *…*, Code for `…`, else Plain) and whether it's
+    # Bold (**…**, which can hold code: « **Un `parametres.json` illisible** »).
     foreach ($part in [regex]::Split($Text, '(\*\*.+?\*\*|`[^`]+`|\*[^*\s][^*]*\*)')) {
         if (-not $part) { continue }
-        if ($part.Length -gt 4 -and $part.StartsWith('**') -and $part.EndsWith('**')) { [pscustomobject]@{ Kind = 'Bold'; Text = $part.Substring(2, $part.Length - 4) } }
-        elseif ($part.Length -gt 2 -and $part.StartsWith('`') -and $part.EndsWith('`')) { [pscustomobject]@{ Kind = 'Code'; Text = $part.Substring(1, $part.Length - 2) } }
-        elseif ($part.Length -gt 2 -and $part.StartsWith('*') -and $part.EndsWith('*')) { [pscustomobject]@{ Kind = 'Italic'; Text = $part.Substring(1, $part.Length - 2) } }
-        else { [pscustomobject]@{ Kind = 'Plain'; Text = $part } }
+        if (-not $Bold -and $part.Length -gt 4 -and $part.StartsWith('**') -and $part.EndsWith('**')) {
+            ConvertFrom-ChangelogInline $part.Substring(2, $part.Length - 4) $true
+            continue
+        }
+        $kind = 'Plain'
+        if ($part.Length -gt 2 -and $part.StartsWith('`') -and $part.EndsWith('`')) { $kind = 'Code' }
+        elseif ($part.Length -gt 2 -and $part.StartsWith('*') -and $part.EndsWith('*')) { $kind = 'Italic' }
+        [pscustomobject]@{ Kind = $kind; Bold = $Bold; Text = $(if ($kind -eq 'Plain') { $part } else { $part.Substring(1, $part.Length - 2) }) }
     }
 }
 
-function New-ChangelogText([string]$Text, [double]$Size = 0) {
-    # A wrapping text block of a line, its Markdown as bold, italic and Consolas runs.
+function New-ChangelogText([string]$Text) {
+    # A wrapping text block of a headline, its Markdown as bold, italic and Consolas runs.
     $block = [System.Windows.Controls.TextBlock]::new()
     $block.TextWrapping = 'Wrap'
-    if ($Size) { $block.FontSize = $Size }
     foreach ($part in ConvertFrom-ChangelogInline $Text) {
         $run = [System.Windows.Documents.Run]::new($part.Text)
-        switch ($part.Kind) {
-            'Bold' { $run.SetResourceReference([System.Windows.Documents.TextElement]::FontWeightProperty, 'R.FontWeightStrong') }
-            'Italic' { $run.FontStyle = 'Italic' }
-            'Code' { $run.FontFamily = [System.Windows.Media.FontFamily]::new('Consolas') }
-        }
+        if ($part.Bold) { $run.SetResourceReference([System.Windows.Documents.TextElement]::FontWeightProperty, 'R.FontWeightStrong') }
+        if ($part.Kind -eq 'Italic') { $run.FontStyle = 'Italic' }
+        if ($part.Kind -eq 'Code') { $run.FontFamily = [System.Windows.Media.FontFamily]::new('Consolas') }
         $block.Inlines.Add($run)
     }
     $block
 }
 
-function New-ChangelogBody($Entries) {
-    # The entries one after the other: the version as a title, its sections in the muted color, its points with a
-    # bullet, a sub-point or a paragraph of a point indented under it.
+function New-ChangelogBody($Summary) {
+    # The sections one after the other: the name in bold, its headlines with a bullet (a dot Narrator doesn't read),
+    # then « et 6 autres » in the muted color.
     $panel = [System.Windows.Controls.StackPanel]::new()
     $first = $true
-    foreach ($entry in $Entries) {
-        $title = New-ChangelogText $entry.Heading 16
-        $title.SetResourceReference([System.Windows.Controls.TextBlock]::FontWeightProperty, 'R.FontWeightTitle')
-        $title.Margin = [System.Windows.Thickness]::new(0, $(if ($first) { 0 } else { 24 }), 0, 2)
+    foreach ($section in $Summary) {
+        if ($section.Name) {
+            $name = New-ChangelogText $section.Name
+            $name.FontSize = 13
+            $name.SetResourceReference([System.Windows.Controls.TextBlock]::FontWeightProperty, 'R.FontWeightStrong')
+            $name.Margin = [System.Windows.Thickness]::new(0, $(if ($first) { 0 } else { 14 }), 0, 2)
+            $null = $panel.Children.Add($name)
+        }
         $first = $false
-        $null = $panel.Children.Add($title)
-        foreach ($line in $entry.Lines) {
-            $item = ConvertFrom-ChangelogLine $line
-            if (-not $item) { continue }
-            if ($item.Kind -in 'Section', 'Subsection') {
-                $block = New-ChangelogText $item.Text $(if ($item.Kind -eq 'Section') { 13.5 } else { 12.5 })
-                $block.SetResourceReference([System.Windows.Controls.TextBlock]::FontWeightProperty, 'R.FontWeightStrong')
-                $block.SetResourceReference([System.Windows.Controls.TextBlock]::ForegroundProperty, 'R.Muted')
-                $block.Margin = [System.Windows.Thickness]::new(0, $(if ($item.Kind -eq 'Section') { 14 } else { 10 }), 0, 2)
-                $null = $panel.Children.Add($block)
-                continue
-            }
-            $block = New-ChangelogText $item.Text
-            if ($item.Kind -eq 'Text' -and -not $item.Level) {
-                $block.Margin = [System.Windows.Thickness]::new(0, 6, 0, 0)
-                $null = $panel.Children.Add($block)
-                continue
-            }
-            # A point: its bullet, then its text, which wraps under itself. A paragraph under a point lines up with it.
+        foreach ($headline in $section.Headlines) {
             $row = [System.Windows.Controls.DockPanel]::new()
-            $row.Margin = [System.Windows.Thickness]::new(16 * $item.Level, 5, 0, 0)
-            $bullet = [System.Windows.Controls.TextBlock]::new()
-            $bullet.Width = 16
-            if ($item.Kind -eq 'Point') { $bullet.Text = '•' }
-            $bullet.SetResourceReference([System.Windows.Controls.TextBlock]::ForegroundProperty, 'R.Muted')
+            $row.Margin = [System.Windows.Thickness]::new(0, 5, 0, 0)
+            $bullet = [System.Windows.Shapes.Ellipse]::new()
+            $bullet.Width = 5
+            $bullet.Height = 5
+            $bullet.VerticalAlignment = 'Top'
+            $bullet.Margin = [System.Windows.Thickness]::new(3, 6, 8, 0)
+            $bullet.SetResourceReference([System.Windows.Shapes.Shape]::FillProperty, 'R.Muted')
             [System.Windows.Controls.DockPanel]::SetDock($bullet, 'Left')
             $null = $row.Children.Add($bullet)
-            $null = $row.Children.Add($block)
+            $null = $row.Children.Add((New-ChangelogText $headline))
             $null = $panel.Children.Add($row)
+        }
+        if ($section.Others) {
+            $others = [System.Windows.Controls.TextBlock]::new()
+            $others.Text = if ($section.Others -eq 1) { Tr 'et 1 autre' } else { (Tr 'et {0} autres') -f $section.Others }
+            $others.Margin = [System.Windows.Thickness]::new(16, 4, 0, 0)
+            $others.SetResourceReference([System.Windows.Controls.TextBlock]::ForegroundProperty, 'R.Muted')
+            $null = $panel.Children.Add($others)
         }
     }
     $panel
 }
 
-function Show-ChangelogWindow($Entries, $Owner) {
-    # The entries, in a window that leaves Repère usable. Its box says whether the next versions open it at start.
+function Show-ChangelogWindow($Entry) {
+    # The entry's headlines, in a window that leaves Repère usable. Its box says whether the next versions open it at
+    # start. One at a time: opening it again (Paramètres' link) replaces the one open. Over the main window, not
+    # Paramètres, which only hides when it closes.
+    if ($script:ChangelogWindow -and $script:ChangelogWindow.IsVisible) { $script:ChangelogWindow.Close() }
     $root = [System.Windows.Markup.XamlReader]::Parse((Expand-Icon $script:ChangelogXaml))
     $window = [System.Windows.Window]::new()
+    $script:ChangelogWindow = $window
     $window.Title = Tr 'Nouveautés'
     $window.Icon = $script:windowIcon
-    $window.Owner = $Owner
-    $window.Width = 660
-    $window.MinWidth = 480
+    $window.Owner = $script:win
+    $window.Width = 560
+    $window.MinWidth = 460
     $window.SizeToContent = 'Height'
     $window.ShowInTaskbar = $false
     $window.WindowStartupLocation = 'CenterOwner'
@@ -176,9 +222,11 @@ function Show-ChangelogWindow($Entries, $Owner) {
     Set-WindowChrome $window -TitleBar $root.FindName('title_bar') -ButtonHost $root.FindName('caption_buttons')
     Register-WindowHeightCap $window
     Register-OwnerFocus $window
-    # Its own version: the entries can go back further. The entries are in French only.
-    $root.FindName('changelog_subtitle').Text = if ($script:UILanguage -eq 'en') { (Tr 'Repère {0}, journal en français') -f $script:RepereVersion } else { (Tr 'Repère {0}') -f $script:RepereVersion }
-    $null = $root.FindName('changelog_body').Children.Add((New-ChangelogBody $Entries))
+    # The version and its date. The notes are in French only.
+    $root.FindName('changelog_subtitle').Text = if ($script:UILanguage -eq 'en') { (Tr 'Repère {0}, journal en français') -f $Entry.Heading } else { (Tr 'Repère {0}') -f $Entry.Heading }
+    $null = $root.FindName('changelog_body').Children.Add((New-ChangelogBody @(Get-ChangelogSummary $Entry)))
+    $script:ChangelogDetailUrl = $script:ChangelogReleaseUrl -f $Entry.Version
+    $root.FindName('changelog_detail').Add_Click({ Start-Process $script:ChangelogDetailUrl })
     $saved = Read-JsonSetting $script:ChangelogSettingPath ShowChangelog
     $hide = $root.FindName('changelog_hide')
     # As saved, before it's wired: then each change is saved, however it's made (a click, Espace, Narrator).
@@ -192,27 +240,33 @@ function Show-ChangelogWindow($Entries, $Owner) {
 }
 
 function Start-Changelog {
-    # At start: the entries since the last version seen, once the main window has drawn and is idle, and this version
-    # saved as seen. Not when parametres.json is there but can't be read: left as it is (#243). Not with the fake AD (a
-    # demo, the tests), unless $env:REPERE_CHANGELOG_SEEN gives the version seen before (the UI tests').
-    $unreadable = $false
-    $saved = Read-JsonSetting $script:ChangelogSettingPath SeenVersion, ShowChangelog ([ref]$unreadable)
-    if ($unreadable) { return }
-    $hadSettings = $script:SettingsBeforeRun
-    if ($script:useFakeAD) {
-        if (-not $env:REPERE_CHANGELOG_SEEN) { return }
-        $saved = [pscustomobject]@{ SeenVersion = $env:REPERE_CHANGELOG_SEEN; ShowChangelog = $(if ($saved) { $saved.ShowChangelog }) }
-        $hadSettings = $true
+    # At start: this version's headlines when Test-ChangelogStart says so, once the main window has drawn and is idle,
+    # and this version saved as seen, unless a newer one was (else that one would open again). A new install has no
+    # fenetre.json, which every close saves. Not when parametres.json is there but can't be read: left as it is (#243).
+    # Not with the fake AD (a demo, the tests), unless $env:REPERE_CHANGELOG_SEEN gives the version seen before (the UI
+    # tests'), as from a Repère used before. Whatever goes wrong here, Repère starts.
+    try {
+        $unreadable = $false
+        $saved = Read-JsonSetting $script:ChangelogSettingPath SeenVersion, ShowChangelog ([ref]$unreadable)
+        if ($unreadable) { return }
+        $hadSettings = [bool]$script:windowSetting
+        if ($script:useFakeAD) {
+            if (-not $env:REPERE_CHANGELOG_SEEN) { return }
+            $saved = [pscustomobject]@{ SeenVersion = $env:REPERE_CHANGELOG_SEEN; ShowChangelog = $(if ($saved) { $saved.ShowChangelog }) }
+            $hadSettings = $true
+        }
+        $show = Test-ChangelogStart $saved $hadSettings $script:RepereVersion
+        $seen = Get-ChangelogSeen $saved
+        if (-not $seen -or $seen -lt [version]$script:RepereVersion) {
+            Save-JsonSetting $script:ChangelogSettingPath ([ordered]@{ SeenVersion = $script:RepereVersion }) -Merge
+        }
+        if (-not $show) { return }
+        $script:ChangelogStartEntry = Get-ChangelogEntry $script:ChangelogPath $script:RepereVersion
+        if (-not $script:ChangelogStartEntry) { return }
+        $script:win.Add_ContentRendered({
+            $null = $script:win.Dispatcher.BeginInvoke([Action]{ Show-ChangelogWindow $script:ChangelogStartEntry },
+                [System.Windows.Threading.DispatcherPriority]::ApplicationIdle)
+        })
     }
-    $from = Get-ChangelogStart $saved $hadSettings $script:RepereVersion
-    if (-not $saved -or "$($saved.SeenVersion)" -ne $script:RepereVersion) {
-        Save-JsonSetting $script:ChangelogSettingPath ([ordered]@{ SeenVersion = $script:RepereVersion }) -Merge
-    }
-    if ($null -eq $from) { return }
-    $script:ChangelogStartEntries = @(Select-ChangelogEntry @(Read-ChangelogEntry $script:ChangelogPath) $from $script:RepereVersion)
-    if (-not $script:ChangelogStartEntries.Count) { return }
-    $script:win.Add_ContentRendered({
-        $null = $script:win.Dispatcher.BeginInvoke([Action]{ Show-ChangelogWindow $script:ChangelogStartEntries $script:win },
-            [System.Windows.Threading.DispatcherPriority]::ApplicationIdle)
-    })
+    catch { Write-Host "Nouveautés non affichées : $_" }
 }
