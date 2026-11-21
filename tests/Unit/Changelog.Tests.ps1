@@ -70,6 +70,12 @@ Describe 'Get-ChangelogSummary: the headlines it shows' {
             Should -BeExactly 'Ordinateurs: **Un** : premier point / Deuxième / Troisième (+2) | Groupes: Seul point / **Propriétés** : une case **Membres** (+0)'
     }
 
+    It "The others' headlines are kept, for « et 2 autres »" {
+        $ordinateurs = @(Get-ChangelogSummary (Get-ChangelogEntry $script:Sample '0.16.0') 3)[0]
+        $ordinateurs.Rest -join ' / ' | Should -BeExactly 'Quatrième / Cinquième'
+        $ordinateurs.Others | Should -Be 2
+    }
+
     It "Points before any section are in one without a name" {
         $summary = @(Get-ChangelogSummary (Get-ChangelogEntry $script:Sample '0.15.0'))
         $summary.Count | Should -Be 1

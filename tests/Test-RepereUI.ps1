@@ -7432,6 +7432,44 @@ function Test-Changelog([string]$Current, [string[]]$Sections) {
         if (-not (Test-ChangelogClosed $window)) { $problems.Add("Fermer didn't close it") }
         $settingsWindow.GetCurrentPattern([System.Windows.Automation.WindowPattern]::Pattern).Close()
     }
+
+    Invoke-Check "Nouveautés: a tab per section goes to it and stays checked; « et 6 autres » shows the others in their place" {
+        param($problems)
+        $settingsWindow = Open-SettingsSection 'shortcuts'
+        Invoke-Element (Get-DialogPart $settingsWindow 'settings_changelog_link')
+        $dialog = Wait-Dialog 'Nouveautés'
+        $tabs = @(0..($Sections.Count - 1) | ForEach-Object { Get-DialogPart $dialog "changelog_tab_$_" } | Where-Object { $_ })
+        $state = { param($tab) $tab.GetCurrentPattern([System.Windows.Automation.TogglePattern]::Pattern).Current.ToggleState }
+        if ($tabs.Count -ne $Sections.Count) { $problems.Add("$($tabs.Count) tabs for $($Sections.Count) sections") }
+        elseif ($Sections.Count -ge 2) {
+            if ((& $state $tabs[0]) -ne 'On') { $problems.Add("the first tab is $(& $state $tabs[0]) at first") }
+            $scroll = (Get-DialogPart $dialog 'changelog_scroll').GetCurrentPattern([System.Windows.Automation.ScrollPattern]::Pattern)
+            Invoke-Element $tabs[-1]
+            Start-Sleep -Milliseconds 500
+            $checked = @($tabs | Where-Object { (& $state $_) -eq 'On' })
+            if ($checked.Count -ne 1 -or $checked[0].Current.AutomationId -ne $tabs[-1].Current.AutomationId) { $problems.Add("after the last tab, the tabs checked are: $($checked.Current.AutomationId -join ', ')") }
+            if ($scroll.Current.VerticallyScrollable -and $scroll.Current.VerticalScrollPercent -lt 99) { $problems.Add("the last tab scrolled to $($scroll.Current.VerticalScrollPercent) %") }
+            if ($ScreenshotDirectory) { Save-Screenshot 'nouveautes-onglet' $dialog }
+        }
+        $more = $null
+        foreach ($index in 0..($Sections.Count - 1)) { if (-not $more) { $more = Get-DialogPart $dialog "changelog_more_$index" } }
+        if (-not $more) { $problems.Add('no section has « et N autres »') }
+        else {
+            $name = $more.Current.Name
+            $id = $more.Current.AutomationId
+            $others = if ($name -match '\d+') { [int]$Matches[0] } else { 1 }
+            $before = @(Get-ChangelogText $dialog).Count
+            Invoke-Element $more
+            Start-Sleep -Milliseconds 500
+            $after = @(Get-ChangelogText $dialog).Count
+            # Its own text goes, its others' headlines come.
+            if ($after - $before -ne $others - 1) { $problems.Add("« $name » added $($after - $before + 1) headlines") }
+            if (Get-DialogPart $dialog $id) { $problems.Add("« $name » is still there") }
+        }
+        Invoke-Element (Get-DialogPart $dialog 'dialog_cancel')
+        if (-not (Test-ChangelogClosed $window)) { $problems.Add("Fermer didn't close it") }
+        $settingsWindow.GetCurrentPattern([System.Windows.Automation.WindowPattern]::Pattern).Close()
+    }
 }
 
 function Test-Density {

@@ -9,16 +9,24 @@ $script:ChangelogSettingPath = Get-SettingPath 'parametres.json'
 $script:ChangelogReleaseUrl = 'https://github.com/reperedev/Repere/releases/tag/v{0}'
 # The headlines a section lists; « et 6 autres » says how many more it has.
 $script:ChangelogShown = 3
-# The window open (Show-ChangelogWindow), if one is.
+# The window open (Show-ChangelogWindow), if one is; its list, and its tabs (Add-ChangelogTab), each its Tab and the
+# Card it goes to. ChangelogJump: a tab's click is scrolling, which leaves its tab checked.
 $script:ChangelogWindow = $null
+$script:ChangelogScroll = $null
+$script:ChangelogTabs = [System.Collections.Generic.List[object]]::new()
+$script:ChangelogJump = $false
 
 $script:ChangelogXaml = @'
 <DockPanel xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation" xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
            Background="{DynamicResource R.Bg}" TextElement.Foreground="{DynamicResource R.Text}">
   <!-- Also the window's title bar (Set-WindowChrome), its buttons at the end: Fermer's X among them. -->
+  <!-- Its sections' tabs under the title (changelog_tabs, with 2 sections or more): a click goes to the section, and the
+       one read is checked as the list scrolls. -->
   <Border x:Name="title_bar" DockPanel.Dock="Top" Background="{DynamicResource R.Chrome}" BorderBrush="{DynamicResource R.Border}" BorderThickness="0,0,0,1" Padding="16,12,0,12">
     <Grid>
       <Grid.ColumnDefinitions><ColumnDefinition Width="*"/><ColumnDefinition Width="Auto"/></Grid.ColumnDefinitions>
+      <Grid.RowDefinitions><RowDefinition Height="Auto"/><RowDefinition Height="Auto"/></Grid.RowDefinitions>
+      <WrapPanel x:Name="changelog_tabs" Grid.Row="1" Grid.ColumnSpan="2" Margin="-4,10,16,-4" Visibility="Collapsed"/>
       <DockPanel VerticalAlignment="Center">
         <Border DockPanel.Dock="Left" Width="38" Height="38" CornerRadius="8" Background="{DynamicResource R.Selection}" TextElement.Foreground="{DynamicResource R.AccentText}">
           <Grid HorizontalAlignment="Center" VerticalAlignment="Center">{{icon:info:20}}</Grid>
@@ -41,7 +49,7 @@ $script:ChangelogXaml = @'
     </Grid>
   </Border>
   <ScrollViewer x:Name="changelog_scroll" VerticalScrollBarVisibility="Auto" HorizontalScrollBarVisibility="Disabled">
-    <StackPanel x:Name="changelog_body" Margin="20,14,20,16"/>
+    <StackPanel x:Name="changelog_body" Margin="16,14,16,6"/>
   </ScrollViewer>
 </DockPanel>
 '@
@@ -170,33 +178,43 @@ function Remove-ChangelogAside([string]$Head, $Asides) {
 
 function Get-ChangelogSummary($Entry, [int]$Shown = $script:ChangelogShown) {
     # The entry as the window shows it: each section (### ; a #### one counts in it) with the Headlines of its first
-    # $Shown points, and how many Others it has. Not the sub-points nor the paragraphs, which are the detail; but a
-    # point that's only a name and « : » (« **Caractéristiques** : ») has its first sub-point's headline after it.
+    # $Shown points, and those of the Rest, which « et 6 autres » shows (Others, how many). Not the sub-points nor the
+    # paragraphs, which are the detail; but a point that's only a name and « : » (« **Caractéristiques** : ») has its
+    # first sub-point's headline after it.
+    $all = $null
     $section = $null
+    $sections = [System.Collections.Generic.List[object]]::new()
     $named = -1
     foreach ($line in $Entry.Lines) {
         if ($line -match '^###\s+(.+)$') {
-            if ($section) { $section }
-            $section = [pscustomobject]@{ Name = $Matches[1].Trim(); Headlines = [System.Collections.Generic.List[string]]::new(); Others = 0 }
+            $all = [System.Collections.Generic.List[string]]::new()
+            $sections.Add([pscustomobject]@{ Name = $Matches[1].Trim(); All = $all })
             $named = -1
         }
         elseif ($line -match '^[-*]\s+(.+)$') {
             $text = $Matches[1]
-            $named = -1
-            if (-not $section) { $section = [pscustomobject]@{ Name = ''; Headlines = [System.Collections.Generic.List[string]]::new(); Others = 0 } }
-            if ($section.Headlines.Count -lt $Shown) {
-                $headline = Get-ChangelogHeadline $text
-                $section.Headlines.Add($headline)
-                if ($text -match '\s:\s*$' -and (Test-ChangelogLabel $headline)) { $named = $section.Headlines.Count - 1 }
+            if ($null -eq $all) {
+                $all = [System.Collections.Generic.List[string]]::new()
+                $sections.Add([pscustomobject]@{ Name = ''; All = $all })
             }
-            else { $section.Others++ }
+            $headline = Get-ChangelogHeadline $text
+            $all.Add($headline)
+            $named = if ($text -match '\s:\s*$' -and (Test-ChangelogLabel $headline)) { $all.Count - 1 } else { -1 }
         }
         elseif ($named -ge 0 -and $line -match '^\s+[-*]\s+(.+)$') {
-            $section.Headlines[$named] = "$($section.Headlines[$named]) : $(Get-ChangelogHeadline $Matches[1])"
+            $all[$named] = "$($all[$named]) : $(Get-ChangelogHeadline $Matches[1])"
             $named = -1
         }
     }
-    if ($section) { $section }
+    foreach ($section in $sections) {
+        $count = [Math]::Min($Shown, $section.All.Count)
+        [pscustomobject]@{
+            Name = $section.Name
+            Headlines = [System.Collections.Generic.List[string]]$section.All.GetRange(0, $count)
+            Rest = [System.Collections.Generic.List[string]]$section.All.GetRange($count, $section.All.Count - $count)
+            Others = $section.All.Count - $count
+        }
+    }
 }
 
 function ConvertFrom-ChangelogInline([string]$Text, [bool]$Bold = $false) {
@@ -229,45 +247,124 @@ function New-ChangelogText([string]$Text) {
     $block
 }
 
+function New-ChangelogRow([string]$Headline) {
+    # A headline after its bullet (a dot Narrator doesn't read).
+    $row = [System.Windows.Controls.DockPanel]::new()
+    $row.Margin = [System.Windows.Thickness]::new(0, 6, 0, 0)
+    $bullet = [System.Windows.Shapes.Ellipse]::new()
+    $bullet.Width = 5
+    $bullet.Height = 5
+    $bullet.VerticalAlignment = 'Top'
+    $bullet.Margin = [System.Windows.Thickness]::new(2, 7, 9, 0)
+    $bullet.SetResourceReference([System.Windows.Shapes.Shape]::FillProperty, 'R.AccentText')
+    [System.Windows.Controls.DockPanel]::SetDock($bullet, 'Left')
+    $null = $row.Children.Add($bullet)
+    $null = $row.Children.Add((New-ChangelogText $Headline))
+    $row
+}
+
 function New-ChangelogBody($Summary) {
-    # The sections one after the other: the name in bold, its headlines with a bullet (a dot Narrator doesn't read),
-    # then « et 6 autres » in the muted color.
+    # Each section in a card (its Tag, the section): its name in bold, its headlines, then « et 6 autres », a link that
+    # shows the others in their place.
     $panel = [System.Windows.Controls.StackPanel]::new()
-    $first = $true
+    $index = 0
     foreach ($section in $Summary) {
+        $card = [System.Windows.Controls.Border]::new()
+        $card.SetResourceReference([System.Windows.FrameworkElement]::StyleProperty, 'Card')
+        $card.Padding = [System.Windows.Thickness]::new(14, 10, 14, 12)
+        $card.Margin = [System.Windows.Thickness]::new(0, 0, 0, 10)
+        $card.Tag = $section
+        $stack = [System.Windows.Controls.StackPanel]::new()
+        $card.Child = $stack
         if ($section.Name) {
             $name = New-ChangelogText $section.Name
-            $name.FontSize = 13
+            $name.FontSize = 13.5
+            $name.Margin = [System.Windows.Thickness]::new(0, 0, 0, 2)
             $name.SetResourceReference([System.Windows.Controls.TextBlock]::FontWeightProperty, 'R.FontWeightStrong')
-            $name.Margin = [System.Windows.Thickness]::new(0, $(if ($first) { 0 } else { 14 }), 0, 2)
-            $null = $panel.Children.Add($name)
+            $null = $stack.Children.Add($name)
         }
-        $first = $false
-        foreach ($headline in $section.Headlines) {
-            $row = [System.Windows.Controls.DockPanel]::new()
-            $row.Margin = [System.Windows.Thickness]::new(0, 5, 0, 0)
-            $bullet = [System.Windows.Shapes.Ellipse]::new()
-            $bullet.Width = 5
-            $bullet.Height = 5
-            $bullet.VerticalAlignment = 'Top'
-            $bullet.Margin = [System.Windows.Thickness]::new(3, 6, 8, 0)
-            $bullet.SetResourceReference([System.Windows.Shapes.Shape]::FillProperty, 'R.Muted')
-            [System.Windows.Controls.DockPanel]::SetDock($bullet, 'Left')
-            $null = $row.Children.Add($bullet)
-            $null = $row.Children.Add((New-ChangelogText $headline))
-            $null = $panel.Children.Add($row)
-        }
+        foreach ($headline in $section.Headlines) { $null = $stack.Children.Add((New-ChangelogRow $headline)) }
         if ($section.Others) {
-            $others = [System.Windows.Controls.TextBlock]::new()
-            $others.Text = if ($section.Others -eq 1) { Tr 'et 1 autre' } else { (Tr 'et {0} autres') -f $section.Others }
-            $others.Margin = [System.Windows.Thickness]::new(16, 4, 0, 0)
-            $others.SetResourceReference([System.Windows.Controls.TextBlock]::ForegroundProperty, 'R.Muted')
-            $null = $panel.Children.Add($others)
+            $more = [System.Windows.Controls.TextBlock]::new()
+            $more.Margin = [System.Windows.Thickness]::new(16, 6, 0, 0)
+            $link = [System.Windows.Documents.Hyperlink]::new([System.Windows.Documents.Run]::new($(if ($section.Others -eq 1) { Tr 'et 1 autre' } else { (Tr 'et {0} autres') -f $section.Others })))
+            [System.Windows.Automation.AutomationProperties]::SetAutomationId($link, "changelog_more_$index")
+            $link.Tag = @{ Panel = $stack; Block = $more; Rest = $section.Rest }
+            $link.Add_Click({
+                param($link)
+                $data = $link.Tag
+                $at = $data.Panel.Children.IndexOf($data.Block)
+                $data.Panel.Children.RemoveAt($at)
+                foreach ($headline in $data.Rest) { $data.Panel.Children.Insert($at, (New-ChangelogRow $headline)); $at++ }
+            })
+            $null = $more.Inlines.Add($link)
+            $null = $stack.Children.Add($more)
         }
+        $null = $panel.Children.Add($card)
+        $index++
     }
     $panel
 }
 
+function Add-ChangelogTab($Root, $Body) {
+    # A tab per section under the title, with how many points it has, when there are 2 named sections or more; the
+    # first checked. Its click goes to its section (Select-ChangelogSection).
+    $script:ChangelogTabs = [System.Collections.Generic.List[object]]::new()
+    $cards = @($Body.Children | Where-Object { $_.Tag.Name })
+    if ($cards.Count -lt 2) { return }
+    $strip = $Root.FindName('changelog_tabs')
+    $strip.Visibility = 'Visible'
+    foreach ($card in $cards) {
+        $count = $card.Tag.Headlines.Count + $card.Tag.Others
+        $tab = [System.Windows.Controls.Primitives.ToggleButton]::new()
+        $tab.SetResourceReference([System.Windows.FrameworkElement]::StyleProperty, 'Toggle.Tab')
+        $tab.Margin = [System.Windows.Thickness]::new(0, 0, 4, 4)
+        $content = [System.Windows.Controls.StackPanel]::new()
+        $content.Orientation = 'Horizontal'
+        $null = $content.Children.Add([System.Windows.Controls.TextBlock]@{ Text = $card.Tag.Name -replace '\*\*|`' })
+        $null = $content.Children.Add([System.Windows.Controls.TextBlock]@{ Text = "$count"; Margin = [System.Windows.Thickness]::new(7, 0, 0, 0); Opacity = 0.7 })
+        $tab.Content = $content
+        [System.Windows.Automation.AutomationProperties]::SetAutomationId($tab, "changelog_tab_$($script:ChangelogTabs.Count)")
+        [System.Windows.Automation.AutomationProperties]::SetName($tab, "$($card.Tag.Name -replace '\*\*|`') ($count)")
+        $tab.Add_Click({
+            param($tab)
+            for ($i = 0; $i -lt $script:ChangelogTabs.Count; $i++) { if ($script:ChangelogTabs[$i].Tab -eq $tab) { Select-ChangelogSection $i } }
+        })
+        $null = $strip.Children.Add($tab)
+        $script:ChangelogTabs.Add(@{ Tab = $tab; Card = $card })
+    }
+    Set-ChangelogTab 0
+}
+
+function Set-ChangelogTab([int]$Index) {
+    # Checks the tab of section $Index, and only it.
+    for ($i = 0; $i -lt $script:ChangelogTabs.Count; $i++) { $script:ChangelogTabs[$i].Tab.IsChecked = $i -eq $Index }
+}
+
+function Select-ChangelogSection([int]$Index) {
+    # Scrolls to section $Index, its card at the top (or as far as the list goes), and checks its tab.
+    Set-ChangelogTab $Index
+    $scroll = $script:ChangelogScroll
+    $top = $script:ChangelogTabs[$Index].Card.TranslatePoint([System.Windows.Point]::new(0, 0), $scroll).Y
+    $target = [Math]::Max(0, [Math]::Min($scroll.ScrollableHeight, $scroll.VerticalOffset + $top - 10))
+    if ([Math]::Abs($target - $scroll.VerticalOffset) -lt 0.5) { return }
+    # Its tab stays checked, though the scroll ends in the section after (the last ones can't reach the top).
+    $script:ChangelogJump = $true
+    $scroll.ScrollToVerticalOffset($target)
+}
+
+function Update-ChangelogTab($Scroll) {
+    # As the list scrolls: the tab of the last section whose card has reached the top, or of the last one at the end.
+    if (-not $script:ChangelogTabs.Count) { return }
+    $active = 0
+    if ($Scroll.ScrollableHeight -gt 0 -and $Scroll.VerticalOffset -ge $Scroll.ScrollableHeight - 1) { $active = $script:ChangelogTabs.Count - 1 }
+    else {
+        for ($i = 0; $i -lt $script:ChangelogTabs.Count; $i++) {
+            if ($script:ChangelogTabs[$i].Card.TranslatePoint([System.Windows.Point]::new(0, 0), $Scroll).Y -le 24) { $active = $i }
+        }
+    }
+    Set-ChangelogTab $active
+}
 function Show-ChangelogWindow($Entry) {
     # The entry's headlines, in a window that leaves Repère usable. Its box says whether the next versions open it at
     # start. One at a time: opening it again (Paramètres' link) replaces the one open. Over the main window, not
@@ -286,12 +383,23 @@ function Show-ChangelogWindow($Entry) {
     $window.WindowStartupLocation = 'CenterOwner'
     $window.SetResourceReference([System.Windows.Window]::BackgroundProperty, 'R.Bg')
     $window.Content = $root
+    # Before the title bar is set: its tabs stay clickable.
+    $body = New-ChangelogBody @(Get-ChangelogSummary $Entry)
+    $null = $root.FindName('changelog_body').Children.Add($body)
+    Add-ChangelogTab $root $body
+    $script:ChangelogScroll = $root.FindName('changelog_scroll')
+    $script:ChangelogJump = $false
+    $script:ChangelogScroll.Add_ScrollChanged({
+        param($scroll, $change)
+        if (-not $change.VerticalChange) { return }
+        if ($script:ChangelogJump) { $script:ChangelogJump = $false; return }
+        Update-ChangelogTab $scroll
+    })
     Set-WindowChrome $window -TitleBar $root.FindName('title_bar') -ButtonHost $root.FindName('caption_buttons')
     Register-WindowHeightCap $window
     Register-OwnerFocus $window
     # The version and its date. The notes are in French only.
     $root.FindName('changelog_subtitle').Text = if ($script:UILanguage -eq 'en') { (Tr 'Repère {0}, journal en français') -f $Entry.Heading } else { (Tr 'Repère {0}') -f $Entry.Heading }
-    $null = $root.FindName('changelog_body').Children.Add((New-ChangelogBody @(Get-ChangelogSummary $Entry)))
     $script:ChangelogDetailUrl = $script:ChangelogReleaseUrl -f $Entry.Version
     $root.FindName('changelog_detail').Add_Click({ Start-Process $script:ChangelogDetailUrl })
     $saved = Read-JsonSetting $script:ChangelogSettingPath ShowChangelog
