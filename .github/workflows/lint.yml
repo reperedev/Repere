@@ -1,0 +1,63 @@
+name: Lint
+
+on:
+  push:
+    branches: [master]
+  pull_request:
+
+jobs:
+  psscriptanalyzer:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Run PSScriptAnalyzer
+        shell: pwsh
+        run: |
+          if (-not (Get-Module -ListAvailable PSScriptAnalyzer)) {
+              Install-Module PSScriptAnalyzer -Scope CurrentUser -Force
+          }
+          # Parse errors and Error-severity rules fail the build; warnings are only reported.
+          $results = Invoke-ScriptAnalyzer -Path . -Recurse -Settings ./PSScriptAnalyzerSettings.psd1
+          $results | Format-Table Severity, RuleName, ScriptName, Line, Message -AutoSize -Wrap
+          $blocking = $results | Where-Object Severity -in 'Error', 'ParseError'
+          if ($blocking) {
+              Write-Error "$($blocking.Count) blocking issue(s) found."
+              exit 1
+          }
+
+      - name: Check the scripts' encoding
+        shell: pwsh
+        run: |
+          # A byte order mark written twice reads as a character: PowerShell then runs the script's first line as a
+          # command (« # » not recognized), which PSScriptAnalyzer doesn't report.
+          $doubled = git ls-files '*.ps1' '*.psm1' '*.psd1' | Where-Object {
+              $bytes = [IO.File]::ReadAllBytes($_)
+              $bytes.Length -ge 6 -and -not (Compare-Object $bytes[0..2] $bytes[3..5]) -and $bytes[0] -eq 0xEF -and $bytes[1] -eq 0xBB -and $bytes[2] -eq 0xBF
+          }
+          if ($doubled) {
+              Write-Error "Byte order mark written twice: $($doubled -join ', ')"
+              exit 1
+          }
+
+  unit-tests:
+    runs-on: windows-latest
+    steps:
+      # The static checks want CRLF in the files checked out, as Git for Windows writes them by default: said here
+      # rather than left to the runner's settings.
+      - name: Keep CRLF line endings on checkout
+        shell: pwsh
+        run: git config --global core.autocrlf true
+
+      - uses: actions/checkout@v4
+
+      - name: Install Pester 5.7.1
+        shell: pwsh
+        run: Install-Module Pester -RequiredVersion 5.7.1 -Force -Scope CurrentUser -SkipPublisherCheck
+
+      - name: Run the unit tests
+        shell: pwsh
+        run: |
+          # The tests of tests/Unit: no window, the fake AD. -CI fails the build on a failed test.
+          Import-Module Pester -RequiredVersion 5.7.1
+          Invoke-Pester -Path tests/Unit -CI
