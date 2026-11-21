@@ -88,45 +88,112 @@ function Test-ChangelogStart($Saved, [bool]$HadSettings, [string]$Current) {
     $HadSettings
 }
 
+# The first comma after these doesn't end a headline: what comes before it only sets the scene (« Apr\u00e8s une action
+# réussie sur plusieurs utilisateurs, la notification… »). In \u: the code is ASCII.
+$script:ChangelogSceneWord = '^(Apr\u00e8s|Avant|Quand|Lorsque|Si|D\u00e8s|Depuis|Pendant|Sans|Avec|Dans|Pour|Hors|Au|Aux|En|Sur|Sous)\b'
+
+function Get-ChangelogWordCount([string]$Text) { @(($Text -replace '\*\*|`') -split '\s+' | Where-Object { $_ }).Count }
+
+function Test-ChangelogLabel([string]$Head) {
+    # Whether $Head only names what the point is about, so a « : » after it doesn't end the headline: a name in bold of 3
+    # words at most (« **Propriétés** »), names in bold one after the other (« **Propriétés**, **Caractéristiques** et
+    # **Comparer les groupes** »), or 2 words at most (« Actions »).
+    $bolds = [regex]::Matches($Head, '\*\*[^*]+\*\*').Count
+    $rest = $Head -replace '\*\*[^*]+\*\*'
+    if ($bolds -ge 2) { return $rest -match '^(\s*(,|et)\s*)*$' }
+    if ($bolds -eq 1) { return -not $rest.Trim() -and (Get-ChangelogWordCount $Head) -le 3 }
+    (Get-ChangelogWordCount $Head) -le 2
+}
+
 function Get-ChangelogHeadline([string]$Text) {
     # A point's headline, kept short: the sentence in bold that starts it (6 words or more), else its first sentence, up
-    # to « . », « : » or « ; », or a comma once it has 8 words; never inside bold, « » or `code`. Past a short name in
-    # bold that starts it (3 words at most): « **Propriétés** : au-delà de 10 groupes… » keeps its words.
+    # to « . », « : » or « ; », or a comma once it has 8 words; never inside bold, « », ( ) or `code`. A « : » past a
+    # name that starts it (Test-ChangelogLabel) doesn't end it: « **Propriétés** : au-delà de 10 groupes… ». Not its asides
+    # in ( ), which are detail, unless they're all it says of its name (« **Utilisateurs connectés…** (clic droit) »).
     if ($Text -match '^\*\*([^*]+)\*\*' -and @($Matches[1].Trim() -split '\s+').Count -ge 6) { return $Matches[0] }
     $quote = 0
+    $paren = 0
     $code = $false
     $bold = $false
-    for ($i = 0; $i -lt $Text.Length - 1; $i++) {
+    # Where each aside starts and ends: ( ) outside bold, « » and code.
+    $asides = [System.Collections.Generic.List[int[]]]::new()
+    $aside = -1
+    $commas = 0
+    $cut = $Text.Length
+    for ($i = 0; $i -lt $Text.Length; $i++) {
         $char = $Text[$i]
+        $next = if ($i + 1 -lt $Text.Length) { $Text[$i + 1] } else { '' }
         if ($char -eq '`') { $code = -not $code; continue }
         if ($code) { continue }
-        if ($char -eq '*' -and $Text[$i + 1] -eq '*') { $bold = -not $bold; $i++; continue }
+        if ($char -eq '*' -and $next -eq '*') { $bold = -not $bold; $i++; continue }
         if ($char -eq [char]0xAB) { $quote++; continue }  # «
         if ($char -eq [char]0xBB) { $quote--; continue }  # »
-        if ($bold -or $quote -gt 0 -or $Text[$i + 1] -ne ' ') { continue }
+        if ($char -eq '(') {
+            if ($paren -eq 0 -and -not $bold -and $quote -le 0) { $aside = $i }
+            $paren++
+            continue
+        }
+        if ($char -eq ')' -and $paren -gt 0) {
+            $paren--
+            if ($paren -eq 0 -and $aside -ge 0) { $asides.Add(@($aside, $i)); $aside = -1 }
+            continue
+        }
+        if ($bold -or $quote -gt 0 -or $paren -gt 0 -or $next -ne ' ') { continue }
         $end = $char -eq '.' -or ($char -in ':', ';' -and $i -gt 0 -and $Text[$i - 1] -eq ' ')
         if (-not $end -and $char -ne ',') { continue }
-        $head = $Text.Substring(0, $i).TrimEnd()
-        $words = @(($head -replace '\*\*|`') -split '\s+' | Where-Object { $_ }).Count
-        if ($end -and ($head -notmatch '^\*\*[^*]+\*\*$' -or $words -gt 3)) { return $head }
-        if (-not $end -and $words -ge 8) { return $head }
+        $head = Remove-ChangelogAside $Text.Substring(0, $i).TrimEnd() $asides
+        if ($end -and -not ($char -eq ':' -and (Test-ChangelogLabel $head))) { $cut = $i; break }
+        if ($end) { continue }
+        $commas++
+        if ((Get-ChangelogWordCount $head) -ge 8 -and ($commas -gt 1 -or ($head -replace '\*\*') -notmatch $script:ChangelogSceneWord)) { $cut = $i; break }
     }
-    $Text.Trim().TrimEnd('.')
+    $head = $Text.Substring(0, $cut).Trim()
+    $short = Remove-ChangelogAside $head $asides
+    if (Test-ChangelogLabel $short.TrimEnd('.', ':', ' ')) { $short = $head }
+    # A name and its « : » alone, its list below (« **Caractéristiques** : »): the name.
+    $short.TrimEnd('.', ':', ';', ' ')
+}
+
+function Remove-ChangelogAside([string]$Head, $Asides) {
+    # $Head without the asides ($Asides, where each starts and ends) it has whole, nor the space before each.
+    $whole = @($Asides | Where-Object { $_[1] -lt $Head.Length })
+    if (-not $whole) { return $Head }
+    $text = [System.Text.StringBuilder]::new()
+    $from = 0
+    foreach ($aside in $whole) {
+        $null = $text.Append($Head, $from, $aside[0] - $from)
+        $from = $aside[1] + 1
+    }
+    $null = $text.Append($Head, $from, $Head.Length - $from)
+    ($text.ToString() -replace '  +', ' ' -replace ' ([,.])', '$1').Trim()
 }
 
 function Get-ChangelogSummary($Entry, [int]$Shown = $script:ChangelogShown) {
     # The entry as the window shows it: each section (### ; a #### one counts in it) with the Headlines of its first
-    # $Shown points, and how many Others it has. Not the sub-points nor the paragraphs, which are the detail.
+    # $Shown points, and how many Others it has. Not the sub-points nor the paragraphs, which are the detail; but a
+    # point that's only a name and « : » (« **Caractéristiques** : ») has its first sub-point's headline after it.
     $section = $null
+    $named = -1
     foreach ($line in $Entry.Lines) {
         if ($line -match '^###\s+(.+)$') {
             if ($section) { $section }
             $section = [pscustomobject]@{ Name = $Matches[1].Trim(); Headlines = [System.Collections.Generic.List[string]]::new(); Others = 0 }
+            $named = -1
         }
         elseif ($line -match '^[-*]\s+(.+)$') {
+            $text = $Matches[1]
+            $named = -1
             if (-not $section) { $section = [pscustomobject]@{ Name = ''; Headlines = [System.Collections.Generic.List[string]]::new(); Others = 0 } }
-            if ($section.Headlines.Count -lt $Shown) { $section.Headlines.Add((Get-ChangelogHeadline $Matches[1])) }
+            if ($section.Headlines.Count -lt $Shown) {
+                $headline = Get-ChangelogHeadline $text
+                $section.Headlines.Add($headline)
+                if ($text -match '\s:\s*$' -and (Test-ChangelogLabel $headline)) { $named = $section.Headlines.Count - 1 }
+            }
             else { $section.Others++ }
+        }
+        elseif ($named -ge 0 -and $line -match '^\s+[-*]\s+(.+)$') {
+            $section.Headlines[$named] = "$($section.Headlines[$named]) : $(Get-ChangelogHeadline $Matches[1])"
+            $named = -1
         }
     }
     if ($section) { $section }

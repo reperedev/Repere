@@ -9,7 +9,7 @@ BeforeAll {
         '## 0.16.0 — 2026-12-01', '',
         '### Ordinateurs', '- **Un** : premier point.', '  - Un sous-point.', '  Un paragraphe du point.', '- Deuxième. Son détail.',
         '#### Caractéristiques', '- Troisième.', '- Quatrième.', '- Cinquième.', '',
-        '### Groupes', '- Seul point.',
+        '### Groupes', '- Seul point.', '- **Propriétés** :', '  - une case **Membres** : son détail ;', '  - une autre.',
         '## 0.15.0 — 2026-11-19', '- Le 0.15.0.'
     )
 }
@@ -64,10 +64,10 @@ Describe 'Test-ChangelogStart: whether it opens at start' {
 }
 
 Describe 'Get-ChangelogSummary: the headlines it shows' {
-    It "Each section with its first points' headlines and how many others; a #### section counts in its ###" {
+    It "Each section with its first points' headlines and how many others; a #### section counts in its ###; a name and « : » alone has its first sub-point's" {
         $summary = @(Get-ChangelogSummary (Get-ChangelogEntry $script:Sample '0.16.0') 3)
         ($summary | ForEach-Object { "$($_.Name): $($_.Headlines -join ' / ') (+$($_.Others))" }) -join ' | ' |
-            Should -BeExactly 'Ordinateurs: **Un** : premier point / Deuxième / Troisième (+2) | Groupes: Seul point (+0)'
+            Should -BeExactly 'Ordinateurs: **Un** : premier point / Deuxième / Troisième (+2) | Groupes: Seul point / **Propriétés** : une case **Membres** (+0)'
     }
 
     It "Points before any section are in one without a name" {
@@ -90,7 +90,15 @@ Describe 'Get-ChangelogHeadline: a point cut to its headline' {
         @{ Text = '**Le texte ne saute plus** en Bureau à distance. La suite.'; Expected = '**Le texte ne saute plus** en Bureau à distance' }
         @{ Text = '**La fenêtre s''ouvre devant** : elle s''ouvrait derrière.'; Expected = '**La fenêtre s''ouvre devant**' }
         @{ Text = '**Propriétés** : au-delà de 10 groupes, une case. Les cases cochées le restent.'; Expected = '**Propriétés** : au-delà de 10 groupes, une case' }
-        @{ Text = '**L''info-bulle du temps de recherche** (« en 1 234 ms ») est un petit tableau : un domaine par ligne.'; Expected = '**L''info-bulle du temps de recherche** (« en 1 234 ms ») est un petit tableau' }
+        @{ Text = '**L''info-bulle du temps de recherche** (« en 1 234 ms ») est un petit tableau : un domaine par ligne.'; Expected = '**L''info-bulle du temps de recherche** est un petit tableau' }
+        @{ Text = '**Propriétés** : l''en-tête montre ce qui compte (verrouillé, désactivé) ; la suite.'; Expected = '**Propriétés** : l''en-tête montre ce qui compte' }
+        @{ Text = '**Anglais** : Paramètres › Langue (Windows, français ou anglais), au prochain lancement ; ou `-Language en`.'; Expected = '**Anglais** : Paramètres › Langue, au prochain lancement' }
+        @{ Text = '**Utilisateurs connectés…** (clic droit, Outils à distance)'; Expected = '**Utilisateurs connectés…** (clic droit, Outils à distance)' }
+        @{ Text = '**Propriétés**, **Caractéristiques** et **Comparer les groupes** : les étiquettes changent. La suite.'; Expected = '**Propriétés**, **Caractéristiques** et **Comparer les groupes** : les étiquettes changent' }
+        @{ Text = 'Actions : modifier la description, déplacer vers une OU, groupes, clés BitLocker.'; Expected = 'Actions : modifier la description, déplacer vers une OU' }
+        @{ Text = 'Après une action réussie sur plusieurs utilisateurs ou plusieurs clés, la notification disait « ordinateurs ».'; Expected = 'Après une action réussie sur plusieurs utilisateurs ou plusieurs clés, la notification disait « ordinateurs »' }
+        @{ Text = 'Hors domaine, Repère installé depuis le zip dit qu''il a besoin de l''AD, au lieu d''une erreur.'; Expected = 'Hors domaine, Repère installé depuis le zip dit qu''il a besoin de l''AD' }
+        @{ Text = '**Caractéristiques** :'; Expected = '**Caractéristiques**' }
         @{ Text = '**Caractéristiques** copie et exporte « Libellé : valeur », sans espaces, pour que le texte reste droit.'; Expected = '**Caractéristiques** copie et exporte « Libellé : valeur »' }
         @{ Text = '**Prochain nom…** a son bouton dans la barre d''actions, son raccourci **Ctrl+N** et un clic droit.'; Expected = '**Prochain nom…** a son bouton dans la barre d''actions' }
         @{ Text = '**Le clic droit** range **Comparer les groupes…**, **Ajouter à un groupe…** et **Retirer** dans **Groupes**, et les copies.'; Expected = '**Le clic droit** range **Comparer les groupes…**, **Ajouter à un groupe…** et **Retirer** dans **Groupes**' }
