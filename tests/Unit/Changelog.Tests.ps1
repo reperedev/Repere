@@ -39,15 +39,13 @@ Describe 'Read-ChangelogEntry and Get-ChangelogEntry' {
 
 Describe 'Test-ChangelogStart: whether it opens at start' {
     It '<Name>' -ForEach @(
-        @{ Name = 'After an update'; Seen = '0.15.0'; Show = $null; Had = $true; Expected = $true }
-        @{ Name = 'The same version again'; Seen = '0.16.0'; Show = $null; Had = $true; Expected = $false }
-        @{ Name = 'An older version than the one seen'; Seen = '0.17.0'; Show = $null; Had = $true; Expected = $false }
-        @{ Name = 'After a Repère that saved no version (0.15.0 and before)'; Seen = $null; Show = $null; Had = $true; Expected = $true }
-        @{ Name = 'A new install'; Seen = $null; Show = $null; Had = $false; Expected = $false }
-        @{ Name = '« Ne plus afficher »'; Seen = '0.15.0'; Show = $false; Had = $true; Expected = $false }
-        @{ Name = '« Ne plus afficher » unticked'; Seen = '0.15.0'; Show = $true; Had = $true; Expected = $true }
+        @{ Name = 'After an update'; Seen = '0.15.0'; Had = $true; Expected = $true }
+        @{ Name = 'The same version again'; Seen = '0.16.0'; Had = $true; Expected = $false }
+        @{ Name = 'An older version than the one seen'; Seen = '0.17.0'; Had = $true; Expected = $false }
+        @{ Name = 'After a Repère that saved no version (0.15.0 and before)'; Seen = $null; Had = $true; Expected = $true }
+        @{ Name = 'A new install'; Seen = $null; Had = $false; Expected = $false }
     ) {
-        Test-ChangelogStart ([pscustomobject]@{ SeenVersion = $Seen; ShowChangelog = $Show }) $Had '0.16.0' | Should -Be $Expected
+        Test-ChangelogStart ([pscustomobject]@{ SeenVersion = $Seen }) $Had '0.16.0' | Should -Be $Expected
     }
 
     It 'Without parametres.json: as after a Repère that saved no version' {
@@ -59,7 +57,7 @@ Describe 'Test-ChangelogStart: whether it opens at start' {
         @{ Seen = 'abc' }, @{ Seen = '0.15' }, @{ Seen = '99999999999.0.0' }
     ) {
         Get-ChangelogSeen ([pscustomobject]@{ SeenVersion = $Seen }) | Should -BeNullOrEmpty
-        Test-ChangelogStart ([pscustomobject]@{ SeenVersion = $Seen; ShowChangelog = $null }) $true '0.16.0' | Should -BeTrue
+        Test-ChangelogStart ([pscustomobject]@{ SeenVersion = $Seen }) $true '0.16.0' | Should -BeTrue
     }
 }
 

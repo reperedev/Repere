@@ -1,8 +1,8 @@
 ﻿# Nouveautés: what this version brought, as the headlines of its CHANGELOG.md entry (in the zip, beside src), in a
 # window of its own once the main window shows, the first time a newer Repère starts (#9). Each section lists its
 # first points' headlines and how many others it has; « Voir le détail » opens the version's release on GitHub, which
-# is that whole entry. Its box « Ne plus afficher » stops it (ShowChangelog in parametres.json); Paramètres'
-# « Nouveautés » opens it whenever. Dot-sourced by the main script, after SettingsWindow.ps1.
+# is that whole entry. It opens once per version, for everyone; Paramètres' « Nouveautés » opens it whenever.
+# Dot-sourced by the main script, after SettingsWindow.ps1.
 
 $script:ChangelogPath = Join-Path (Split-Path $PSScriptRoot) 'CHANGELOG.md'
 $script:ChangelogSettingPath = Get-SettingPath 'parametres.json'
@@ -41,11 +41,9 @@ $script:ChangelogXaml = @'
   </Border>
   <Border DockPanel.Dock="Bottom" Background="{DynamicResource R.Chrome}" BorderBrush="{DynamicResource R.Border}" BorderThickness="0,1,0,0" Padding="16,12">
     <Grid>
-      <Grid.ColumnDefinitions><ColumnDefinition Width="Auto"/><ColumnDefinition Width="Auto"/><ColumnDefinition Width="*"/><ColumnDefinition Width="Auto"/></Grid.ColumnDefinitions>
-      <!-- Saved as it's clicked: the next versions don't open this window at start. Paramètres' « Nouveautés » still does. -->
-      <CheckBox x:Name="changelog_hide" VerticalAlignment="Center" Margin="0,0,16,0" Content="Ne plus afficher"/>
-      <TextBlock Grid.Column="1" VerticalAlignment="Center" Margin="0,0,14,0"><Hyperlink x:Name="changelog_detail" AutomationProperties.AutomationId="changelog_detail">Voir le détail</Hyperlink></TextBlock>
-      <Button x:Name="dialog_cancel" Grid.Column="3" Style="{StaticResource Btn.Primary}" MinWidth="90" IsDefault="True" IsCancel="True" Content="Fermer"/>
+      <Grid.ColumnDefinitions><ColumnDefinition Width="Auto"/><ColumnDefinition Width="*"/><ColumnDefinition Width="Auto"/></Grid.ColumnDefinitions>
+      <TextBlock VerticalAlignment="Center" Margin="0,0,14,0"><Hyperlink x:Name="changelog_detail" AutomationProperties.AutomationId="changelog_detail">Voir le détail</Hyperlink></TextBlock>
+      <Button x:Name="dialog_cancel" Grid.Column="2" Style="{StaticResource Btn.Primary}" MinWidth="90" IsDefault="True" IsCancel="True" Content="Fermer"/>
     </Grid>
   </Border>
   <ScrollViewer x:Name="changelog_scroll" VerticalScrollBarVisibility="Auto" HorizontalScrollBarVisibility="Disabled">
@@ -89,8 +87,7 @@ function Get-ChangelogSeen($Saved) {
 function Test-ChangelogStart($Saved, [bool]$HadSettings, [string]$Current) {
     # Whether this start opens Nouveautés: the first start of a version newer than the one seen ($Saved, see
     # Get-ChangelogSeen), or of this one after a Repère that saved none (0.15.0 and earlier). Not a new install (no
-    # $HadSettings), the same version again, an older one, nor after « Ne plus afficher » (ShowChangelog false).
-    if ($Saved -and $Saved.ShowChangelog -eq $false) { return $false }
+    # $HadSettings), the same version again, nor an older one.
     $seen = Get-ChangelogSeen $Saved
     if ($seen) { return $seen -lt [version]$Current }
     $HadSettings
@@ -402,13 +399,6 @@ function Show-ChangelogWindow($Entry) {
     $root.FindName('changelog_subtitle').Text = if ($script:UILanguage -eq 'en') { (Tr 'Repère {0}, journal en français') -f $Entry.Heading } else { (Tr 'Repère {0}') -f $Entry.Heading }
     $script:ChangelogDetailUrl = $script:ChangelogReleaseUrl -f $Entry.Version
     $root.FindName('changelog_detail').Add_Click({ Start-Process $script:ChangelogDetailUrl })
-    $saved = Read-JsonSetting $script:ChangelogSettingPath ShowChangelog
-    $hide = $root.FindName('changelog_hide')
-    # As saved, before it's wired: then each change is saved, however it's made (a click, Espace, Narrator).
-    $hide.IsChecked = [bool]($saved -and $saved.ShowChangelog -eq $false)
-    $save = { param($box) Save-JsonSetting $script:ChangelogSettingPath ([ordered]@{ ShowChangelog = -not $box.IsChecked }) -Merge }
-    $hide.Add_Checked($save)
-    $hide.Add_Unchecked($save)
     # Fermer and Échap close it as its X does: a window that isn't modal has no DialogResult to close it.
     $root.FindName('dialog_cancel').Add_Click({ param($button) [System.Windows.Window]::GetWindow($button).Close() })
     $window.Show()
@@ -422,12 +412,12 @@ function Start-Changelog {
     # tests'), as from a Repère used before. Whatever goes wrong here, Repère starts.
     try {
         $unreadable = $false
-        $saved = Read-JsonSetting $script:ChangelogSettingPath SeenVersion, ShowChangelog ([ref]$unreadable)
+        $saved = Read-JsonSetting $script:ChangelogSettingPath SeenVersion ([ref]$unreadable)
         if ($unreadable) { return }
         $hadSettings = [bool]$script:windowSetting
         if ($script:useFakeAD) {
             if (-not $env:REPERE_CHANGELOG_SEEN) { return }
-            $saved = [pscustomobject]@{ SeenVersion = $env:REPERE_CHANGELOG_SEEN; ShowChangelog = $(if ($saved) { $saved.ShowChangelog }) }
+            $saved = [pscustomobject]@{ SeenVersion = $env:REPERE_CHANGELOG_SEEN }
             $hadSettings = $true
         }
         $show = Test-ChangelogStart $saved $hadSettings $script:RepereVersion

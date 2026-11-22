@@ -664,7 +664,6 @@
         @('Retirer {0}', 'Remove {0}'),
         # Changelog.ps1, and Paramètres' link to it
         @('Nouveautés', 'What''s new'),
-        @('Ne plus afficher', 'Don''t show again'),
         @('Voir le détail', 'See the details'),
         @('et 1 autre', 'and 1 more'),
         @('Repère {0}', 'Repère {0}'),

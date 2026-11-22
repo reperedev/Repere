@@ -7362,16 +7362,16 @@ function Test-ChangelogContent($Dialog, [string]$Current, [string[]]$Sections, $
 }
 
 function Test-ChangelogFit {
-    # At Très grande in Verdana bold (the widest text), Nouveautés' box, Voir le détail and Fermer stay in the window,
-    # one after the other. Repère starts again with that apparence.json; the session removes it after.
+    # At Très grande in Verdana bold (the widest text), Nouveautés' Voir le détail and Fermer stay in the window, one
+    # after the other. Repère starts again with that apparence.json; the session removes it after.
     Restart-App '{ "TextScale": 1.3, "FontFamily": "Verdana", "FontWeight": "Bold" }'
-    Invoke-Check "Nouveautés at Très grande, Verdana gras: its box, Voir le détail and Fermer fit in it" {
+    Invoke-Check "Nouveautés at Très grande, Verdana gras: Voir le détail and Fermer fit in it" {
         param($problems)
         $dialog = Wait-Dialog 'Nouveautés'
         if ($ScreenshotDirectory) { Save-Screenshot 'nouveautes-tres-grande' $dialog }
         $box = $dialog.Current.BoundingRectangle
         $right = $null
-        foreach ($id in 'changelog_hide', 'changelog_detail', 'dialog_cancel') {
+        foreach ($id in 'changelog_detail', 'dialog_cancel') {
             $rect = (Get-DialogPart $dialog $id).Current.BoundingRectangle
             if ($rect.Left -lt $box.Left + 8 -or $rect.Right -gt $box.Right - 8 -or $rect.Bottom -gt $box.Bottom) { $problems.Add("$id spans $($rect.Left)-$($rect.Right), the window $($box.Left)-$($box.Right)") }
             if ($null -ne $right -and $rect.Left -lt $right) { $problems.Add("$id overlaps the one before it") }
@@ -7383,26 +7383,19 @@ function Test-ChangelogFit {
 
 function Test-Changelog([string]$Current, [string[]]$Sections) {
     # #9: started after an update (the session gives the version seen before), Nouveautés opens with this version's
-    # headlines only; « Ne plus afficher » is saved in parametres.json, and its X closes it. Paramètres' « Nouveautés »
-    # opens it again, one window however often it's clicked, its box as saved.
+    # headlines only, this version saved as seen in parametres.json, and its X closes it. It has no box to stop it.
+    # Paramètres' « Nouveautés » opens it again, one window however often it's clicked.
     $settingsFile = Join-Path $env:APPDATA 'Repere\parametres.json'
-    Invoke-Check "Nouveautés: opens at start after an update with this version's headlines; its box is saved, and its X closes it" {
+    Invoke-Check "Nouveautés: opens at start after an update with this version's headlines, saved as seen; its X closes it" {
         param($problems)
         $dialog = Wait-Dialog 'Nouveautés'
         if ($ScreenshotDirectory) { Save-Screenshot 'nouveautes' $dialog }
         Test-ChangelogContent $dialog $Current $Sections $problems
         $close = Get-DialogPart $dialog 'caption_close'
         if (-not $close) { $problems.Add('it has no X') }
-        $toggle = (Get-DialogPart $dialog 'changelog_hide').GetCurrentPattern([System.Windows.Automation.TogglePattern]::Pattern)
-        if ($toggle.Current.ToggleState -ne 'Off') { $problems.Add("« Ne plus afficher » is $($toggle.Current.ToggleState) at first") }
-        $toggle.Toggle()
-        $saved = $null
-        for ($i = 0; $i -lt 20; $i++) {
-            $saved = if (Test-Path $settingsFile) { Get-Content $settingsFile -Raw | ConvertFrom-Json }
-            if ($saved -and $saved.PSObject.Properties['ShowChangelog'] -and $saved.ShowChangelog -eq $false) { break }
-            Start-Sleep -Milliseconds 150
-        }
-        if (-not $saved -or -not $saved.PSObject.Properties['ShowChangelog'] -or $saved.ShowChangelog -ne $false -or $saved.SeenVersion -ne $Current) {
+        if (Get-DialogPart $dialog 'changelog_hide') { $problems.Add('it still has « Ne plus afficher »') }
+        $saved = if (Test-Path $settingsFile) { Get-Content $settingsFile -Raw | ConvertFrom-Json }
+        if (-not $saved -or $saved.SeenVersion -ne $Current) {
             $problems.Add("parametres.json holds: $(if ($saved) { $saved | ConvertTo-Json -Compress })")
         }
         if ($close) {
@@ -7411,7 +7404,7 @@ function Test-Changelog([string]$Current, [string[]]$Sections) {
         }
     }
 
-    Invoke-Check "Nouveautés: Paramètres' link opens it again, once however often it's clicked, its box as saved" {
+    Invoke-Check "Nouveautés: Paramètres' link opens it again, once however often it's clicked" {
         param($problems)
         $settingsWindow = Open-SettingsSection 'shortcuts'
         $link = Get-DialogPart $settingsWindow 'settings_changelog_link'
@@ -7426,8 +7419,6 @@ function Test-Changelog([string]$Current, [string[]]$Sections) {
         if ($open -ne 1) { $problems.Add("two clicks leave $open windows open") }
         $dialog = Wait-Dialog 'Nouveautés'
         Test-ChangelogContent $dialog $Current $Sections $problems
-        $state = (Get-DialogPart $dialog 'changelog_hide').GetCurrentPattern([System.Windows.Automation.TogglePattern]::Pattern).Current.ToggleState
-        if ($state -ne 'On') { $problems.Add("« Ne plus afficher » is $state, saved as checked") }
         Invoke-Element (Get-DialogPart $dialog 'dialog_cancel')
         if (-not (Test-ChangelogClosed $window)) { $problems.Add("Fermer didn't close it") }
         $settingsWindow.GetCurrentPattern([System.Windows.Automation.WindowPattern]::Pattern).Close()
