@@ -135,33 +135,7 @@ function Get-SettingsWindowXaml {
   <Border Background="{DynamicResource R.Chrome}" BorderBrush="{DynamicResource R.Border}" BorderThickness="0,0,1,0" Padding="10,24,10,18">
     <StackPanel>
       <TextBlock Text="Paramètres" FontSize="17" FontWeight="{DynamicResource R.FontWeightTitle}" Margin="10,0,0,16"/>
-      <ListBox x:Name="settings_nav" Background="Transparent" BorderThickness="0" AutomationProperties.Name="Sections">
-        <!-- In the theme's colors (Windows' own list style uses Windows' accent color): the section shown has the
-             selection color and an accent bar, its text staying the usual one; the one under the mouse the hover color. -->
-        <ListBox.ItemContainerStyle>
-          <Style TargetType="ListBoxItem">
-            <Setter Property="Foreground" Value="{DynamicResource R.Text}"/>
-            <Setter Property="Background" Value="Transparent"/>
-            <Setter Property="FocusVisualStyle" Value="{StaticResource FocusRing}"/>
-            <Setter Property="Template">
-              <Setter.Value>
-                <ControlTemplate TargetType="ListBoxItem">
-                  <Grid Margin="0,1">
-                    <Border x:Name="Back" Background="{TemplateBinding Background}" CornerRadius="6" Padding="{TemplateBinding Padding}"><ContentPresenter/></Border>
-                    <Border x:Name="Bar" Width="3" Height="16" CornerRadius="1.5" HorizontalAlignment="Left" Background="{DynamicResource R.Accent}" Visibility="Hidden"/>
-                  </Grid>
-                  <ControlTemplate.Triggers>
-                    <Trigger Property="IsMouseOver" Value="True"><Setter TargetName="Back" Property="Background" Value="{DynamicResource R.ControlHover}"/></Trigger>
-                    <Trigger Property="IsSelected" Value="True">
-                      <Setter TargetName="Back" Property="Background" Value="{DynamicResource R.Selection}"/>
-                      <Setter TargetName="Bar" Property="Visibility" Value="Visible"/>
-                    </Trigger>
-                  </ControlTemplate.Triggers>
-                </ControlTemplate>
-              </Setter.Value>
-            </Setter>
-          </Style>
-        </ListBox.ItemContainerStyle>
+      <ListBox x:Name="settings_nav" Background="Transparent" BorderThickness="0" AutomationProperties.Name="Sections" ItemContainerStyle="{StaticResource Nav.Item}">
         $($nav -join "`n        ")
       </ListBox>
       <TextBlock x:Name="settings_version" Text="Repère $($script:RepereVersion)" Style="{StaticResource Txt.Faint}" FontSize="12" Margin="10,18,0,0"/>

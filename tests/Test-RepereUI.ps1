@@ -7424,23 +7424,23 @@ function Test-Changelog([string]$Current, [string[]]$Sections) {
         $settingsWindow.GetCurrentPattern([System.Windows.Automation.WindowPattern]::Pattern).Close()
     }
 
-    Invoke-Check "Nouveautés: a tab per section goes to it and stays checked; « et 6 autres » shows the others in their place" {
+    Invoke-Check "Nouveautés: a section chosen in its column goes to it and stays chosen; « et 6 autres » shows the others in their place" {
         param($problems)
         $settingsWindow = Open-SettingsSection 'shortcuts'
         Invoke-Element (Get-DialogPart $settingsWindow 'settings_changelog_link')
         $dialog = Wait-Dialog 'Nouveautés'
-        $tabs = @(0..($Sections.Count - 1) | ForEach-Object { Get-DialogPart $dialog "changelog_tab_$_" } | Where-Object { $_ })
-        $state = { param($tab) $tab.GetCurrentPattern([System.Windows.Automation.TogglePattern]::Pattern).Current.ToggleState }
-        if ($tabs.Count -ne $Sections.Count) { $problems.Add("$($tabs.Count) tabs for $($Sections.Count) sections") }
+        $items = @(0..($Sections.Count - 1) | ForEach-Object { Get-DialogPart $dialog "changelog_nav_$_" } | Where-Object { $_ })
+        $chosen = { param($item) $item.GetCurrentPattern([System.Windows.Automation.SelectionItemPattern]::Pattern).Current.IsSelected }
+        if ($items.Count -ne $Sections.Count) { $problems.Add("$($items.Count) items in the column for $($Sections.Count) sections") }
         elseif ($Sections.Count -ge 2) {
-            if ((& $state $tabs[0]) -ne 'On') { $problems.Add("the first tab is $(& $state $tabs[0]) at first") }
+            if (-not (& $chosen $items[0])) { $problems.Add('the first section isn''t chosen at first') }
             $scroll = (Get-DialogPart $dialog 'changelog_scroll').GetCurrentPattern([System.Windows.Automation.ScrollPattern]::Pattern)
-            Invoke-Element $tabs[-1]
+            $items[-1].GetCurrentPattern([System.Windows.Automation.SelectionItemPattern]::Pattern).Select()
             Start-Sleep -Milliseconds 500
-            $checked = @($tabs | Where-Object { (& $state $_) -eq 'On' })
-            if ($checked.Count -ne 1 -or $checked[0].Current.AutomationId -ne $tabs[-1].Current.AutomationId) { $problems.Add("after the last tab, the tabs checked are: $($checked.Current.AutomationId -join ', ')") }
-            if ($scroll.Current.VerticallyScrollable -and $scroll.Current.VerticalScrollPercent -lt 99) { $problems.Add("the last tab scrolled to $($scroll.Current.VerticalScrollPercent) %") }
-            if ($ScreenshotDirectory) { Save-Screenshot 'nouveautes-onglet' $dialog }
+            $selected = @($items | Where-Object { & $chosen $_ })
+            if ($selected.Count -ne 1 -or $selected[0].Current.AutomationId -ne $items[-1].Current.AutomationId) { $problems.Add("after the last section, the ones chosen are: $($selected.Current.AutomationId -join ', ')") }
+            if ($scroll.Current.VerticallyScrollable -and $scroll.Current.VerticalScrollPercent -lt 99) { $problems.Add("the last section scrolled to $($scroll.Current.VerticalScrollPercent) %") }
+            if ($ScreenshotDirectory) { Save-Screenshot 'nouveautes-section' $dialog }
         }
         $more = $null
         foreach ($index in 0..($Sections.Count - 1)) { if (-not $more) { $more = Get-DialogPart $dialog "changelog_more_$index" } }
