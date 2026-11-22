@@ -7381,7 +7381,7 @@ function Test-ChangelogFit {
     }
 }
 
-function Test-Changelog([string]$Current, [string[]]$Sections) {
+function Test-Changelog([string]$Current, [string[]]$Sections, [int]$Points) {
     # #9: started after an update (the session gives the version seen before), Nouveautés opens with this version's
     # headlines only, this version saved as seen in parametres.json, and its X closes it. It has no box to stop it.
     # Paramètres' « Nouveautés » opens it again, one window however often it's clicked.
@@ -7424,7 +7424,7 @@ function Test-Changelog([string]$Current, [string[]]$Sections) {
         $settingsWindow.GetCurrentPattern([System.Windows.Automation.WindowPattern]::Pattern).Close()
     }
 
-    Invoke-Check "Nouveautés: a section chosen in its column goes to it and stays chosen; « et 6 autres » shows the others in their place" {
+    Invoke-Check "Nouveautés: a section chosen in its column goes to it and stays chosen; every point is listed" {
         param($problems)
         $settingsWindow = Open-SettingsSection 'shortcuts'
         Invoke-Element (Get-DialogPart $settingsWindow 'settings_changelog_link')
@@ -7442,21 +7442,11 @@ function Test-Changelog([string]$Current, [string[]]$Sections) {
             if ($scroll.Current.VerticallyScrollable -and $scroll.Current.VerticalScrollPercent -lt 99) { $problems.Add("the last section scrolled to $($scroll.Current.VerticalScrollPercent) %") }
             if ($ScreenshotDirectory) { Save-Screenshot 'nouveautes-section' $dialog }
         }
-        $more = $null
-        foreach ($index in 0..($Sections.Count - 1)) { if (-not $more) { $more = Get-DialogPart $dialog "changelog_more_$index" } }
-        if (-not $more) { $problems.Add('no section has « et N autres »') }
-        else {
-            $name = $more.Current.Name
-            $id = $more.Current.AutomationId
-            $others = if ($name -match '\d+') { [int]$Matches[0] } else { 1 }
-            $before = @(Get-ChangelogText $dialog).Count
-            Invoke-Element $more
-            Start-Sleep -Milliseconds 500
-            $after = @(Get-ChangelogText $dialog).Count
-            # Its own text goes, its others' headlines come.
-            if ($after - $before -ne $others - 1) { $problems.Add("« $name » added $($after - $before + 1) headlines") }
-            if (Get-DialogPart $dialog $id) { $problems.Add("« $name » is still there") }
-        }
+        # Every point, not the first few: a text per point and per section's name, and as many as the column counts.
+        $list = @(Get-ChangelogText (Get-DialogPart $dialog 'changelog_scroll'))
+        if ($list.Count -ne $Points + $Sections.Count) { $problems.Add("the list has $($list.Count) texts for $Points points in $($Sections.Count) sections") }
+        $counted = ($items | ForEach-Object { if ($_.Current.Name -match '\((\d+)\)$') { [int]$Matches[1] } } | Measure-Object -Sum).Sum
+        if ($Sections.Count -ge 2 -and $counted -ne $Points) { $problems.Add("the column counts $counted points for $Points") }
         Invoke-Element (Get-DialogPart $dialog 'dialog_cancel')
         if (-not (Test-ChangelogClosed $window)) { $problems.Add("Fermer didn't close it") }
         $settingsWindow.GetCurrentPattern([System.Windows.Automation.WindowPattern]::Pattern).Close()
@@ -9175,10 +9165,13 @@ try {
         $changelogLines = [System.IO.File]::ReadAllLines((Join-Path (Split-Path $PSScriptRoot) 'CHANGELOG.md'))
         $changelogStarts = @(for ($i = 0; $i -lt $changelogLines.Count; $i++) { if ($changelogLines[$i] -match '^## \d+\.\d+\.\d+\b') { $i } })
         $changelogVersions = @($changelogStarts | ForEach-Object { [regex]::Match($changelogLines[$_], '\d+\.\d+\.\d+').Value })
-        $changelogSections = @($changelogLines[$changelogStarts[0]..$changelogStarts[1]] | Where-Object { $_ -match '^### ' } | ForEach-Object { $_.Substring(4).Trim() })
+        # A section about every area is « Général » there.
+        $changelogEntry = $changelogLines[$changelogStarts[0]..$changelogStarts[1]]
+        $changelogSections = @($changelogEntry | Where-Object { $_ -match '^### ' } | ForEach-Object { $_.Substring(4).Trim() -replace '^Ordinateurs, Utilisateurs et Groupes$', 'Général' })
+        $changelogPoints = @($changelogEntry | Where-Object { $_ -match '^[-*]\s' }).Count
         $env:REPERE_CHANGELOG_SEEN = $changelogVersions[1]
         Start-App
-        Test-Changelog $changelogVersions[0] $changelogSections
+        Test-Changelog $changelogVersions[0] $changelogSections $changelogPoints
         Test-ChangelogFit
         Stop-App
         Remove-Item $appearanceFile -ErrorAction SilentlyContinue

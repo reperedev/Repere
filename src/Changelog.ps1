@@ -1,14 +1,12 @@
 ﻿# Nouveautés: what this version brought, as the headlines of its CHANGELOG.md entry (in the zip, beside src), in a
-# window of its own once the main window shows, the first time a newer Repère starts (#9). Each section lists its
-# first points' headlines and how many others it has; « Voir le détail » opens the version's release on GitHub, which
+# window of its own once the main window shows, the first time a newer Repère starts (#9). Each section lists
+# all its points' headlines; « Voir le détail » opens the version's release on GitHub, which
 # is that whole entry. It opens once per version, for everyone; Paramètres' « Nouveautés » opens it whenever.
 # Dot-sourced by the main script, after SettingsWindow.ps1.
 
 $script:ChangelogPath = Join-Path (Split-Path $PSScriptRoot) 'CHANGELOG.md'
 $script:ChangelogSettingPath = Get-SettingPath 'parametres.json'
 $script:ChangelogReleaseUrl = 'https://github.com/reperedev/Repere/releases/tag/v{0}'
-# The headlines a section lists; « et 6 autres » says how many more it has.
-$script:ChangelogShown = 3
 # The window open (Show-ChangelogWindow), if one is; its list, its column of sections (Add-ChangelogNav) and the
 # section each of its items goes to. ChangelogJump: a section chosen is scrolling, which leaves it chosen.
 # ChangelogSync: the scroll is choosing the section read, which doesn't scroll.
@@ -183,10 +181,9 @@ function Remove-ChangelogAside([string]$Head, $Asides) {
     ($text.ToString() -replace '  +', ' ' -replace ' ([,.])', '$1').Trim()
 }
 
-function Get-ChangelogSummary($Entry, [int]$Shown = $script:ChangelogShown) {
-    # The entry as the window shows it: each section (### ; a #### one counts in it) with the Headlines of its first
-    # $Shown points, and those of the Rest, which « et 6 autres » shows (Others, how many). Not the sub-points nor the
-    # paragraphs, which are the detail; but a point that's only a name and « : » (« **Caractéristiques** : ») has its
+function Get-ChangelogSummary($Entry) {
+    # The entry as the window shows it: each section (### ; a #### one counts in it) with the Headlines of its points.
+    # Not the sub-points nor the paragraphs, which are the detail; but a point that's only a name and « : » (« **Caractéristiques** : ») has its
     # first sub-point's headline after it.
     $all = $null
     $section = $null
@@ -213,15 +210,25 @@ function Get-ChangelogSummary($Entry, [int]$Shown = $script:ChangelogShown) {
             $named = -1
         }
     }
-    foreach ($section in $sections) {
-        $count = [Math]::Min($Shown, $section.All.Count)
-        [pscustomobject]@{
-            Name = $section.Name
-            Headlines = [System.Collections.Generic.List[string]]$section.All.GetRange(0, $count)
-            Rest = [System.Collections.Generic.List[string]]$section.All.GetRange($count, $section.All.Count - $count)
-            Others = $section.All.Count - $count
-        }
+    foreach ($section in $sections) { [pscustomobject]@{ Name = $section.Name; Headlines = $section.All } }
+}
+
+function Get-ChangelogArea([string]$Name) {
+    # The parts of section $Name (« Ordinateurs, Utilisateurs et Groupes »), each with its area's Icon, $null when it
+    # isn't one (ChangelogAreaIcons).
+    foreach ($part in @(($Name -replace '\*\*|`') -split ',\s*|\s+et\s+' | Where-Object { $_ })) {
+        $icon = $null
+        foreach ($area in $script:ChangelogAreaIcons.Keys) { if ($part -match $area) { $icon = $script:ChangelogAreaIcons[$area]; break } }
+        [pscustomobject]@{ Part = $part; Icon = $icon }
     }
+}
+
+function Get-ChangelogSectionName([string]$Name) {
+    # Section $Name as the window names it: « Général » for one about 3 areas or more, whose long name would wrap in the
+    # column; else as CHANGELOG.md names it.
+    $parts = @(Get-ChangelogArea $Name)
+    if ($parts.Count -ge 3 -and -not ($parts | Where-Object { -not $_.Icon })) { return "G$([char]0xE9)n$([char]0xE9)ral" }
+    $Name
 }
 
 function ConvertFrom-ChangelogInline([string]$Text, [bool]$Bold = $false) {
@@ -273,13 +280,8 @@ function New-ChangelogRow([string]$Headline) {
 function Get-ChangelogIcon([string]$Name) {
     # The icon of section $Name: its area's (ChangelogAreaIcons), layers for several areas, the first area's when it
     # names other things too (« Fenêtre et Paramètres »); else one for what it's about, a list for the rest.
-    $parts = @(($Name -replace '\*\*|`') -split ',\s*|\s+et\s+' | Where-Object { $_ })
-    $icons = foreach ($part in $parts) {
-        $icon = $null
-        foreach ($area in $script:ChangelogAreaIcons.Keys) { if ($part -match $area) { $icon = $script:ChangelogAreaIcons[$area]; break } }
-        $icon
-    }
-    $known = @($icons | Where-Object { $_ })
+    $parts = @(Get-ChangelogArea $Name)
+    $known = @($parts | ForEach-Object Icon | Where-Object { $_ })
     if ($known.Count -gt 1 -and $known.Count -eq $parts.Count) { return 'layers' }
     if ($known) { return $known[0] }
     if ($Name -match 'curit') { return 'lock' }
@@ -294,8 +296,8 @@ function New-ChangelogIcon([string]$Name, [int]$Size = 16) {
 }
 
 function New-ChangelogBody($Summary) {
-    # Each section (its Tag, the section), a line between them: its icon and name, its headlines, then « et 6 autres », a
-    # link that shows the others in their place.
+    # Each section (its Tag, the section), a line between them: its icon and name (Get-ChangelogSectionName), then all
+    # its headlines; the window scrolls when they don't fit.
     $panel = [System.Windows.Controls.StackPanel]::new()
     $index = 0
     foreach ($section in $Summary) {
@@ -318,29 +320,13 @@ function New-ChangelogBody($Summary) {
             $icon.SetResourceReference([System.Windows.Documents.TextElement]::ForegroundProperty, 'R.AccentText')
             [System.Windows.Controls.DockPanel]::SetDock($icon, 'Left')
             $null = $head.Children.Add($icon)
-            $name = New-ChangelogText $section.Name
+            $name = New-ChangelogText (Get-ChangelogSectionName $section.Name)
             $name.FontSize = 14
             $name.SetResourceReference([System.Windows.Controls.TextBlock]::FontWeightProperty, 'R.FontWeightStrong')
             $null = $head.Children.Add($name)
             $null = $stack.Children.Add($head)
         }
         foreach ($headline in $section.Headlines) { $null = $stack.Children.Add((New-ChangelogRow $headline)) }
-        if ($section.Others) {
-            $more = [System.Windows.Controls.TextBlock]::new()
-            $more.Margin = [System.Windows.Thickness]::new(16, 6, 0, 0)
-            $link = [System.Windows.Documents.Hyperlink]::new([System.Windows.Documents.Run]::new($(if ($section.Others -eq 1) { Tr 'et 1 autre' } else { (Tr 'et {0} autres') -f $section.Others })))
-            [System.Windows.Automation.AutomationProperties]::SetAutomationId($link, "changelog_more_$index")
-            $link.Tag = @{ Panel = $stack; Block = $more; Rest = $section.Rest }
-            $link.Add_Click({
-                param($link)
-                $data = $link.Tag
-                $at = $data.Panel.Children.IndexOf($data.Block)
-                $data.Panel.Children.RemoveAt($at)
-                foreach ($headline in $data.Rest) { $data.Panel.Children.Insert($at, (New-ChangelogRow $headline)); $at++ }
-            })
-            $null = $more.Inlines.Add($link)
-            $null = $stack.Children.Add($more)
-        }
         $null = $panel.Children.Add($block)
         $index++
     }
@@ -356,12 +342,12 @@ function Add-ChangelogNav($Root, $Body) {
     if ($blocks.Count -lt 2) { return $false }
     $Root.FindName('changelog_nav_column').Visibility = 'Visible'
     foreach ($block in $blocks) {
-        $name = $block.Tag.Name -replace '\*\*|`'
-        $count = $block.Tag.Headlines.Count + $block.Tag.Others
+        $name = (Get-ChangelogSectionName $block.Tag.Name) -replace '\*\*|`'
+        $count = $block.Tag.Headlines.Count
         $item = [System.Windows.Controls.ListBoxItem]::new()
         $item.Padding = [System.Windows.Thickness]::new(10, 7, 10, 7)
         $row = [System.Windows.Controls.DockPanel]::new()
-        $icon = New-ChangelogIcon (Get-ChangelogIcon $name)
+        $icon = New-ChangelogIcon (Get-ChangelogIcon $block.Tag.Name)
         $icon.VerticalAlignment = 'Top'
         $icon.Margin = [System.Windows.Thickness]::new(0, 1, 10, 0)
         [System.Windows.Controls.DockPanel]::SetDock($icon, 'Left')

@@ -665,7 +665,6 @@
         # Changelog.ps1, and Paramètres' link to it
         @('Nouveautés', 'What''s new'),
         @('Voir le détail', 'See the details'),
-        @('et 1 autre', 'and 1 more'),
         @('Repère {0}', 'Repère {0}'),
         @('Repère {0}, journal en français', 'Repère {0} · notes in French'),
         # ColumnFilter.ps1

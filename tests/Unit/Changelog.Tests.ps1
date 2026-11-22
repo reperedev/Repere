@@ -62,16 +62,10 @@ Describe 'Test-ChangelogStart: whether it opens at start' {
 }
 
 Describe 'Get-ChangelogSummary: the headlines it shows' {
-    It "Each section with its first points' headlines and how many others; a #### section counts in its ###; a name and « : » alone has its first sub-point's" {
-        $summary = @(Get-ChangelogSummary (Get-ChangelogEntry $script:Sample '0.16.0') 3)
-        ($summary | ForEach-Object { "$($_.Name): $($_.Headlines -join ' / ') (+$($_.Others))" }) -join ' | ' |
-            Should -BeExactly 'Ordinateurs: **Un** : premier point / Deuxième / Troisième (+2) | Groupes: Seul point / **Propriétés** : une case **Membres** (+0)'
-    }
-
-    It "The others' headlines are kept, for « et 2 autres »" {
-        $ordinateurs = @(Get-ChangelogSummary (Get-ChangelogEntry $script:Sample '0.16.0') 3)[0]
-        $ordinateurs.Rest -join ' / ' | Should -BeExactly 'Quatrième / Cinquième'
-        $ordinateurs.Others | Should -Be 2
+    It "Each section with all its points' headlines; a #### section counts in its ###; a name and « : » alone has its first sub-point's" {
+        $summary = @(Get-ChangelogSummary (Get-ChangelogEntry $script:Sample '0.16.0'))
+        ($summary | ForEach-Object { "$($_.Name): $($_.Headlines -join ' / ')" }) -join ' | ' |
+            Should -BeExactly 'Ordinateurs: **Un** : premier point / Deuxième / Troisième / Quatrième / Cinquième | Groupes: Seul point / **Propriétés** : une case **Membres**'
     }
 
     It "Points before any section are in one without a name" {
@@ -85,6 +79,21 @@ Describe 'Get-ChangelogSummary: the headlines it shows' {
         foreach ($entry in Read-ChangelogEntry $script:ChangelogPath) {
             @(Get-ChangelogSummary $entry | ForEach-Object Headlines | Where-Object { $_ }).Count | Should -BeGreaterThan 0 -Because $entry.Heading
         }
+    }
+}
+
+Describe "Get-ChangelogSectionName and Get-ChangelogIcon: a section's name and icon in the window" {
+    It '<Name>' -ForEach @(
+        @{ Name = 'Ordinateurs, Utilisateurs et Groupes'; Shown = 'Général'; Icon = 'layers' }
+        @{ Name = 'Utilisateurs et Groupes'; Shown = 'Utilisateurs et Groupes'; Icon = 'layers' }
+        @{ Name = 'Ordinateurs'; Shown = 'Ordinateurs'; Icon = 'monitor' }
+        @{ Name = 'Paramètres'; Shown = 'Paramètres'; Icon = 'settings' }
+        @{ Name = 'Fenêtre et Paramètres'; Shown = 'Fenêtre et Paramètres'; Icon = 'settings' }
+        @{ Name = 'Fiabilité et sécurité'; Shown = 'Fiabilité et sécurité'; Icon = 'lock' }
+        @{ Name = 'Documentation'; Shown = 'Documentation'; Icon = 'list' }
+    ) {
+        Get-ChangelogSectionName $Name | Should -BeExactly $Shown
+        Get-ChangelogIcon $Name | Should -BeExactly $Icon
     }
 }
 
