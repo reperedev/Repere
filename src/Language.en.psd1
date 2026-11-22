@@ -662,6 +662,11 @@
         @('Aucune OU ne correspond.', 'No OU matches.'),
         @('Tout décocher', 'Uncheck all'),
         @('Retirer {0}', 'Remove {0}'),
+        # Changelog.ps1, and Paramètres' link to it
+        @('Nouveautés', 'What''s new'),
+        @('Voir le détail', 'See the details'),
+        @('Repère {0}', 'Repère {0}'),
+        @('Repère {0}, journal en français', 'Repère {0} · notes in French'),
         # ColumnFilter.ps1
         @('Filtrer cette colonne', 'Filter this column'),
         @('Filtrer cette colonne…', 'Filter this column…'),

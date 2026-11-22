@@ -135,36 +135,14 @@ function Get-SettingsWindowXaml {
   <Border Background="{DynamicResource R.Chrome}" BorderBrush="{DynamicResource R.Border}" BorderThickness="0,0,1,0" Padding="10,24,10,18">
     <StackPanel>
       <TextBlock Text="Paramètres" FontSize="17" FontWeight="{DynamicResource R.FontWeightTitle}" Margin="10,0,0,16"/>
-      <ListBox x:Name="settings_nav" Background="Transparent" BorderThickness="0" AutomationProperties.Name="Sections">
-        <!-- In the theme's colors (Windows' own list style uses Windows' accent color): the section shown has the
-             selection color and an accent bar, its text staying the usual one; the one under the mouse the hover color. -->
-        <ListBox.ItemContainerStyle>
-          <Style TargetType="ListBoxItem">
-            <Setter Property="Foreground" Value="{DynamicResource R.Text}"/>
-            <Setter Property="Background" Value="Transparent"/>
-            <Setter Property="FocusVisualStyle" Value="{StaticResource FocusRing}"/>
-            <Setter Property="Template">
-              <Setter.Value>
-                <ControlTemplate TargetType="ListBoxItem">
-                  <Grid Margin="0,1">
-                    <Border x:Name="Back" Background="{TemplateBinding Background}" CornerRadius="6" Padding="{TemplateBinding Padding}"><ContentPresenter/></Border>
-                    <Border x:Name="Bar" Width="3" Height="16" CornerRadius="1.5" HorizontalAlignment="Left" Background="{DynamicResource R.Accent}" Visibility="Hidden"/>
-                  </Grid>
-                  <ControlTemplate.Triggers>
-                    <Trigger Property="IsMouseOver" Value="True"><Setter TargetName="Back" Property="Background" Value="{DynamicResource R.ControlHover}"/></Trigger>
-                    <Trigger Property="IsSelected" Value="True">
-                      <Setter TargetName="Back" Property="Background" Value="{DynamicResource R.Selection}"/>
-                      <Setter TargetName="Bar" Property="Visibility" Value="Visible"/>
-                    </Trigger>
-                  </ControlTemplate.Triggers>
-                </ControlTemplate>
-              </Setter.Value>
-            </Setter>
-          </Style>
-        </ListBox.ItemContainerStyle>
+      <ListBox x:Name="settings_nav" Background="Transparent" BorderThickness="0" AutomationProperties.Name="Sections" ItemContainerStyle="{StaticResource Nav.Item}">
         $($nav -join "`n        ")
       </ListBox>
       <TextBlock x:Name="settings_version" Text="Repère $($script:RepereVersion)" Style="{StaticResource Txt.Faint}" FontSize="12" Margin="10,18,0,0"/>
+      <!-- What this version brought (Show-ChangelogWindow), when CHANGELOG.md has its entry. -->
+      <TextBlock x:Name="settings_changelog" FontSize="12" Margin="10,4,10,0">
+        <Hyperlink x:Name="settings_changelog_link" AutomationProperties.AutomationId="settings_changelog_link">Nouveautés</Hyperlink>
+      </TextBlock>
       <!-- A newer Repère is out (Update-ReleaseNotice): which, with a link to its page. -->
       <TextBlock x:Name="settings_update" Visibility="Collapsed" FontSize="12" Margin="10,4,10,0" TextWrapping="Wrap">
         <Hyperlink x:Name="settings_update_link" AutomationProperties.AutomationId="settings_update_link"><Run x:Name="settings_update_text"/></Hyperlink>
@@ -369,6 +347,8 @@ function Initialize-SettingsWindow {
     Connect-SccmSetting $root
     $root.FindName('settings_update_link').Add_Click({ if ($script:NewerRelease) { Start-Process $script:NewerRelease.Url } })
     Update-ReleaseNotice
+    $root.FindName('settings_changelog').Visibility = ConvertTo-Visibility ([bool](Get-ChangelogEntry $script:ChangelogPath $script:RepereVersion))
+    $root.FindName('settings_changelog_link').Add_Click({ Show-ChangelogWindow (Get-ChangelogEntry $script:ChangelogPath $script:RepereVersion) })
 
     $nav = $root.FindName('settings_nav')
     # Leaving SCCM or Redémarrage saves what was typed there (what can't be stays typed, its problem shown).

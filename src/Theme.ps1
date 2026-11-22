@@ -300,6 +300,7 @@ $script:Icons = @{
     password = 'M4,7 H20 A2,2 0 0 1 22,9 V15 A2,2 0 0 1 20,17 H4 A2,2 0 0 1 2,15 V9 A2,2 0 0 1 4,7 Z M12,12 H12.01 M17,12 H17.01 M7,12 H7.01'
     eye = 'M2,12 C4.5,7 8,5 12,5 C16,5 19.5,7 22,12 C19.5,17 16,19 12,19 C8,19 4.5,17 2,12 Z M9,12 A3,3 0 1 0 15,12 A3,3 0 1 0 9,12 Z'
     eyeoff = 'M2,12 C4.5,7 8,5 12,5 C16,5 19.5,7 22,12 C19.5,17 16,19 12,19 C8,19 4.5,17 2,12 Z M9,12 A3,3 0 1 0 15,12 A3,3 0 1 0 9,12 Z M3,3 L21,21'
+    layers = 'M12,4 L4,8 L12,12 L20,8 Z M4,12 L12,16 L20,12 M4,16 L12,20 L20,16'
     open = 'M14,4 H20 V10 M20,4 L11,13 M18,14 V19 A1,1 0 0 1 17,20 H5 A1,1 0 0 1 4,19 V7 A1,1 0 0 1 5,6 H10'
 }
 
@@ -978,6 +979,32 @@ $script:SharedResources = @'
     <Trigger Property="IsMouseOver" Value="True"><Setter Property="Background" Value="{DynamicResource R.ControlHover}"/><Setter Property="Foreground" Value="{DynamicResource R.Text}"/></Trigger>
     <Trigger Property="IsChecked" Value="True"><Setter Property="Background" Value="{DynamicResource R.Selection}"/><Setter Property="Foreground" Value="{DynamicResource R.AccentText}"/></Trigger>
   </Style.Triggers>
+</Style>
+
+<!-- An item of a column of sections (Paramètres, Nouveautés), in the theme's colors (Windows' own list style uses
+     Windows' accent color): the section shown has the selection color and an accent bar, its text staying the usual
+     one; the one under the mouse the hover color. -->
+<Style x:Key="Nav.Item" TargetType="ListBoxItem">
+  <Setter Property="Foreground" Value="{DynamicResource R.Text}"/>
+  <Setter Property="Background" Value="Transparent"/>
+  <Setter Property="FocusVisualStyle" Value="{StaticResource FocusRing}"/>
+  <Setter Property="Template">
+    <Setter.Value>
+      <ControlTemplate TargetType="ListBoxItem">
+        <Grid Margin="0,1">
+          <Border x:Name="Back" Background="{TemplateBinding Background}" CornerRadius="6" Padding="{TemplateBinding Padding}"><ContentPresenter/></Border>
+          <Border x:Name="Bar" Width="3" Height="16" CornerRadius="1.5" HorizontalAlignment="Left" Background="{DynamicResource R.Accent}" Visibility="Hidden"/>
+        </Grid>
+        <ControlTemplate.Triggers>
+          <Trigger Property="IsMouseOver" Value="True"><Setter TargetName="Back" Property="Background" Value="{DynamicResource R.ControlHover}"/></Trigger>
+          <Trigger Property="IsSelected" Value="True">
+            <Setter TargetName="Back" Property="Background" Value="{DynamicResource R.Selection}"/>
+            <Setter TargetName="Bar" Property="Visibility" Value="Visible"/>
+          </Trigger>
+        </ControlTemplate.Triggers>
+      </ControlTemplate>
+    </Setter.Value>
+  </Setter>
 </Style>
 
 <!-- One part of a segmented choice (Dernière connexion, its units). -->

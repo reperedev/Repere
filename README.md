@@ -26,7 +26,7 @@ Puis :
 2. Extrayez-le où vous voulez, par exemple `C:\Outils\Repere`.
 3. Double-cliquez sur **Repère.cmd**. Pour l'avoir sous la main, épinglez Repère à la barre des tâches une fois ouvert.
 
-Quand une nouvelle version sort, un point apparaît sur **Paramètres**.
+Quand une nouvelle version sort, un point apparaît sur **Paramètres**. Une fois installée, **Nouveautés** en montre les changements au premier lancement.
 
 ## Premiers pas
 

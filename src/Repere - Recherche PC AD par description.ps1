@@ -129,6 +129,8 @@ Initialize-Theme
 . "$PSScriptRoot\RemoteAccess.ps1"
 # Paramètres.
 . "$PSScriptRoot\SettingsWindow.ps1"
+# Nouveautés: what a new version brought, at its first start and from Paramètres.
+. "$PSScriptRoot\Changelog.ps1"
 # The Propriétés windows' and dialogs' reads, on the search runspaces.
 . "$PSScriptRoot\Background.ps1"
 # The results grids' column filters (each page's).
@@ -1467,6 +1469,9 @@ if ($script:UnreadableSettings.Count) {
         Show-ActionNotice (Tr 'Paramètres') ('✖ ' + ((Tr '{0} illisible, valeurs par défaut. Le fichier est gardé dans {1} pour être corrigé.') -f $names, $script:SettingsFolder)) $errors -Persist
     })
 }
+
+# Nouveautés: the first start of a newer Repère shows what it brought (Changelog.ps1).
+Start-Changelog
 
 # The page shown when Repère closed comes back (Ordinateurs otherwise), once the window is there.
 if ($windowSetting -and $windowSetting.Page -in 'users', 'groups') {

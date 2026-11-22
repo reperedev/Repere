@@ -64,7 +64,7 @@ In `%APPDATA%\Repere`, one file per part, so that a damaged file only loses its 
 | File | Holds |
 |---|---|
 | `apparence.json` | the mode, the theme and your themes, the font, the text size, the density |
-| `parametres.json` | **Move to**, the SCCM site and the language |
+| `parametres.json` | **Move to**, the SCCM site, the language, and the last version started, to show **What's new** once per update |
 | `recherche.json` | the domain, the search type and the recent searches |
 | `redemarrage.json` | the delay and message of **Restart…** |
 | `motdepasse.json` | the password choice, and the default password, encrypted for your Windows account |

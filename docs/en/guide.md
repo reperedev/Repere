@@ -151,6 +151,8 @@ The **Settings** button, at the top right, has these pages:
 
 Everything saves without a button: when you leave a box, change pages or close the window.
 
+Under the version number, **What's new** shows what the version brought. That window also opens by itself the first time a new version starts.
+
 ![The mode and the themes](images/apparence.png)
 
 ## Keyboard shortcuts

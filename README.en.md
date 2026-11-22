@@ -26,7 +26,7 @@ Then:
 2. Extract it wherever you like, for example `C:\Tools\Repere`.
 3. Double-click **Repère.cmd**. To keep it handy, pin Repère to the taskbar once it's open.
 
-Repère follows Windows's language the first time: French or English. To switch, go to **Settings › Appearance › Language**. When a new version is out, a dot shows on **Settings**.
+Repère follows Windows's language the first time: French or English. To switch, go to **Settings › Appearance › Language**. When a new version is out, a dot shows on **Settings**. Once it's installed, **What's new** shows its changes the first time it starts.
 
 ## First steps
 
