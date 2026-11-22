@@ -149,6 +149,8 @@ Le bouton **Paramètres**, en haut à droite, a ces pages :
 
 Tout s'enregistre sans bouton : en quittant une case, en changeant de page ou en fermant la fenêtre.
 
+Sous le numéro de version, **Nouveautés** montre ce que la version a apporté. Cette fenêtre s'ouvre aussi d'elle-même au premier lancement d'une nouvelle version.
+
 ![Le mode et les thèmes](images/apparence.png)
 
 ## Raccourcis clavier

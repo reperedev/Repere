@@ -64,7 +64,7 @@ Dans `%APPDATA%\Repere`, un fichier par partie, pour qu'un fichier abîmé ne fa
 | Fichier | Contient |
 |---|---|
 | `apparence.json` | le mode, le thème et vos thèmes, la police, la taille du texte, la densité |
-| `parametres.json` | **Déplacer vers**, le site SCCM et la langue |
+| `parametres.json` | **Déplacer vers**, le site SCCM, la langue, et la dernière version lancée, pour montrer **Nouveautés** une fois par mise à jour |
 | `recherche.json` | le domaine, le type de recherche et les recherches récentes |
 | `redemarrage.json` | le délai et le message de **Redémarrer…** |
 | `motdepasse.json` | le choix de mot de passe, et le mot de passe par défaut, chiffré pour votre compte Windows |
