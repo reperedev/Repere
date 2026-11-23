@@ -39,6 +39,19 @@ $script:LapsDialogXaml = @'
 </DockPanel>
 '@
 
+function Format-LapsDate($Date) {
+    # An expiration as it's shown, or $null without one. AD keeps it as a FILETIME, Get-LapsADPassword as a date. Also
+    # a computer's Propriétés › Sécurité (ComputerDetails.ps1).
+    if ($null -eq $Date -or "$Date" -eq '' -or "$Date" -eq '0') { return }
+    if ($Date -isnot [datetime]) {
+        # AD's « never » is past what a date can hold: none, and the password still reads.
+        try { $Date = [datetime]::FromFileTime([long]"$Date") } catch { return }
+    }
+    elseif ($Date.Kind -eq 'Utc') { $Date = $Date.ToLocalTime() }
+    $text = Format-TextDate $Date
+    if ($Date -lt (Get-Date)) { (Tr 'a expiré le {0}') -f $text } else { (Tr 'expire le {0}') -f $text }
+}
+
 function Get-LapsEntry($Computer) {
     # A computer's LAPS password, and its text as Copier gives it: its name and kind, the account, then the password or
     # why it can't be shown, AD's English errors in French. ReadAs: that text as UI Automation reads the card.

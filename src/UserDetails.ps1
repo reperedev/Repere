@@ -321,12 +321,15 @@ function Get-UserDetailXaml($Detail) {
 # The values of a user's Propriétés that have a Copier button, by id: one is often asked for alone.
 $script:UserDetailCopy = 'login', 'upn', 'mail'
 
-# The cards, a user's then a group's, by title: the key each is folded by (FoldedSections), and its icon. A title is
-# an id, in French (Get-DetailCardXaml shows it in this run's language); found by its translation too.
+# The cards, a user's, a group's then a computer's (its Groupes are a user's), by title: the key each is folded by
+# (FoldedSections), and its icon. A title is an id, in French (Get-DetailCardXaml shows it in this run's language);
+# found by its translation too.
 $script:DetailSectionKeys = @{ Compte = 'compte'; Verrouillage = 'verrouillage'; 'Mot de passe' = 'motdepasse'; Groupes = 'groupes'; Identité = 'identite'; Organisation = 'organisation'; Profil = 'profil'
-                               Groupe = 'groupe'; Membres = 'membres'; 'Membre de' = 'membrede' }
+                               Groupe = 'groupe'; Membres = 'membres'; 'Membre de' = 'membrede'
+                               Ordinateur = 'ordinateur'; Gestion = 'gestion'; Système = 'systeme'; Connexion = 'connexion'; Sécurité = 'securite'; Objet = 'objet' }
 $script:DetailSectionIcons = @{ Compte = 'user'; Verrouillage = 'lock'; 'Mot de passe' = 'password'; Groupes = 'users'; Identité = 'list'; Organisation = 'users'; Profil = 'folder'
-                                Groupe = 'info'; Membres = 'users'; 'Membre de' = 'list' }
+                                Groupe = 'info'; Membres = 'users'; 'Membre de' = 'list'
+                                Ordinateur = 'monitor'; Gestion = 'sliders'; Système = 'cpu'; Connexion = 'activity'; Sécurité = 'key'; Objet = 'info' }
 foreach ($sectionTitle in @($script:DetailSectionKeys.Keys)) {
     $script:DetailSectionKeys[(Tr $sectionTitle)] = $script:DetailSectionKeys[$sectionTitle]
     $script:DetailSectionIcons[(Tr $sectionTitle)] = $script:DetailSectionIcons[$sectionTitle]
@@ -378,14 +381,14 @@ function Get-DetailCardXaml([string]$Title, [string]$Body, [string]$Action, [str
         "<StackPanel Grid.Column=`"1`" Orientation=`"Horizontal`" HorizontalAlignment=`"Right`" VerticalAlignment=`"Center`" Margin=`"0,0,12,0`" IsHitTestVisible=`"False`" TextElement.Foreground=`"{DynamicResource R.Muted}`">" +
         "{{icon:lock:12}}<TextBlock Text=`"lecture seule`" FontSize=`"12`" Margin=`"6,0,0,0`"/></StackPanel>"
     }
-    $footerXaml = if ($Footer) { "<TextBlock Style=`"{StaticResource Txt.Muted}`" FontSize=`"12`" Margin=`"14,8,14,8`" TextWrapping=`"Wrap`" Text=`"$(& $x $Footer)`"/>" }
+    $footerXaml = if ($Footer) { "<TextBlock Style=`"{StaticResource Txt.Muted}`" FontSize=`"12`" Margin=`"14,4,14,6`" TextWrapping=`"Wrap`" Text=`"$(& $x $Footer)`"/>" }
     @"
-  <Border Style="{StaticResource Card}" CornerRadius="10" Margin="0,0,0,10"$border>
+  <Border Style="{StaticResource Card}" CornerRadius="10" Margin="0,0,0,8"$border>
     <StackPanel>
-      <Grid Margin="6,6,10,6">
+      <Grid Margin="6,3,8,3">
         <Grid.ColumnDefinitions><ColumnDefinition Width="Auto"/><ColumnDefinition Width="*"/><ColumnDefinition Width="Auto"/></Grid.ColumnDefinitions>
         <!-- The whole header folds the card, up to its actions (as in Caractéristiques); « lecture seule » lets clicks through. -->
-        <ToggleButton x:Name="user_section_$key" Grid.ColumnSpan="2" Margin="0,0,8,0" Style="{StaticResource Toggle.Fold}" IsChecked="$open" MinHeight="40" ToolTip="Replier ou déplier" AutomationProperties.Name="$(& $x $shownTitle)">
+        <ToggleButton x:Name="user_section_$key" Grid.ColumnSpan="2" Margin="0,0,8,0" Style="{StaticResource Toggle.Fold}" IsChecked="$open" MinHeight="34" ToolTip="Replier ou déplier" AutomationProperties.Name="$(& $x $shownTitle)">
           <StackPanel Orientation="Horizontal">
             <Border x:Name="user_section_chevron_$key" TextElement.Foreground="{DynamicResource R.Muted}" VerticalAlignment="Center" RenderTransformOrigin="0.5,0.5">
               <Border.RenderTransform><RotateTransform Angle="$(if ($open) { 0 } else { -90 })"/></Border.RenderTransform>
@@ -403,7 +406,7 @@ function Get-DetailCardXaml([string]$Title, [string]$Body, [string]$Action, [str
         $Action
       </Grid>
       <!-- The card's content in a panel of its own, a shade apart from the header (the window's background). -->
-      <Border x:Name="user_section_body_$key" Visibility="$(if ($open) { 'Visible' } else { 'Collapsed' })" Margin="8,0,8,8" Padding="0,10,0,2"
+      <Border x:Name="user_section_body_$key" Visibility="$(if ($open) { 'Visible' } else { 'Collapsed' })" Margin="8,0,8,6" Padding="0,6,0,2"
               CornerRadius="8" Background="{DynamicResource R.Bg}" BorderBrush="{DynamicResource R.Border}" BorderThickness="1">
         <StackPanel>
 $Body
@@ -429,20 +432,20 @@ function Get-DetailRowsXaml($Rows, [string]$Prefix = 'user_detail', [string[]]$C
         $color = if ($missing) { ' Style="{StaticResource Txt.Faint}"' }
                  elseif ($tone -eq 'warn') { ' Foreground="{DynamicResource R.WarnText}"' }
                  elseif ($tone -eq 'danger') { ' Foreground="{DynamicResource R.DangerText}"' }
-        $label = "<TextBlock Grid.Row=`"$i`" Style=`"{StaticResource Txt.Muted}`" Text=`"$(& $x $entry[0])`" Margin=`"0,0,12,8`"/>"
+        $label = "<TextBlock Grid.Row=`"$i`" Style=`"{StaticResource Txt.Muted}`" Text=`"$(& $x $entry[0])`" Margin=`"0,0,12,4`"/>"
         if ($missing -or $Copy -notcontains $entry[2]) {
-            $label + "<TextBlock x:Name=`"$($Prefix)_$($entry[2])`" Grid.Row=`"$i`" Grid.Column=`"1`" Text=`"$(& $x $value)`" TextWrapping=`"Wrap`" Margin=`"0,0,0,8`"$color/>"
+            $label + "<TextBlock x:Name=`"$($Prefix)_$($entry[2])`" Grid.Row=`"$i`" Grid.Column=`"1`" Text=`"$(& $x $value)`" TextWrapping=`"Wrap`" Margin=`"0,0,0,4`"$color/>"
             continue
         }
         # The button's margins keep the row as high as the others.
         $copyName = (Tr 'Copier {0}') -f $entry[0]
-        $label + "<StackPanel Grid.Row=`"$i`" Grid.Column=`"1`" Orientation=`"Horizontal`" Margin=`"0,0,0,8`">" +
+        $label + "<StackPanel Grid.Row=`"$i`" Grid.Column=`"1`" Orientation=`"Horizontal`" Margin=`"0,0,0,4`">" +
         "<TextBlock x:Name=`"$($Prefix)_$($entry[2])`" Text=`"$(& $x $value)`" VerticalAlignment=`"Center`"$color/>" +
         "<Button x:Name=`"$($Prefix)_copy_$($entry[2])`" Style=`"{StaticResource Btn.Mini}`" Margin=`"6,-4,0,-4`" VerticalAlignment=`"Center`" ToolTip=`"Copier`"" +
         " AutomationProperties.Name=`"$(& $x $copyName)`">{{icon:copy:14}}</Button></StackPanel>"
     }
     $definitions = '<RowDefinition Height="Auto"/>' * $Rows.Count
-    "      <Grid Margin=`"14,0,14,6`"><Grid.ColumnDefinitions><ColumnDefinition Width=`"210`"/><ColumnDefinition Width=`"*`"/></Grid.ColumnDefinitions><Grid.RowDefinitions>$definitions</Grid.RowDefinitions>$($lines -join '')</Grid>"
+    "      <Grid Margin=`"14,0,14,2`"><Grid.ColumnDefinitions><ColumnDefinition Width=`"210`"/><ColumnDefinition Width=`"*`"/></Grid.ColumnDefinitions><Grid.RowDefinitions>$definitions</Grid.RowDefinitions>$($lines -join '')</Grid>"
 }
 
 function Get-UserGroupXaml($Detail) {
@@ -514,7 +517,7 @@ function Get-DetailListXaml($Items, [string]$Prefix, [string]$PickTip, [string]$
             " ToolTip=`"$(& $x $openTip)`" AutomationProperties.Name=`"$(& $x $openName)`">{{icon:open:14}}</Button>"
         }
         @"
-      <Border x:Name="$($Prefix)_row_$i" Tag="$(& $x "$($item.Name) $($item.Detail)")" BorderBrush="{DynamicResource R.Border}" BorderThickness="$(if ($i) { '0,1,0,0' } else { '0' })" CornerRadius="6" Margin="4,0" Padding="10,0" MinHeight="42">
+      <Border x:Name="$($Prefix)_row_$i" Tag="$(& $x "$($item.Name) $($item.Detail)")" BorderBrush="{DynamicResource R.Border}" BorderThickness="$(if ($i) { '0,1,0,0' } else { '0' })" CornerRadius="6" Margin="4,0" Padding="10,0" MinHeight="36">
         $style
         <Grid>
           <Grid.ColumnDefinitions><ColumnDefinition Width="30"/><ColumnDefinition Width="Auto"/><ColumnDefinition Width="*"/><ColumnDefinition Width="Auto"/><ColumnDefinition Width="Auto"/></Grid.ColumnDefinitions>
@@ -531,7 +534,7 @@ function Get-DetailListXaml($Items, [string]$Prefix, [string]$PickTip, [string]$
       </Border>
 "@
     }
-    $list = "<StackPanel Margin=`"0,-6,0,0`">$($rows -join "`n")</StackPanel>"
+    $list = "<StackPanel Margin=`"0,-4,0,0`">$($rows -join "`n")</StackPanel>"
     if (-not $filter) { return $list }
     # The box as Membres has its search, its icon a filter's: it hides rows here, rather than asking AD.
     @"
@@ -1064,7 +1067,26 @@ function Save-UserCard($State, [string]$Card) {
 
 function Show-UserManagerDialog($State) {
     # Responsable's Choisir…: the users whose name, login or email starts with what's typed (anr), in each domain of the
-    # forest (Find-UserManagerChoice); the one chosen becomes the card's Responsable, saved with its other fields.
+    # forest (New-ManagerPickerContent); the one chosen becomes the card's Responsable, saved with its other fields.
+    $content = New-ManagerPickerContent $State.Row.Domain ([string]$State.Row.DistinguishedName)
+    $list = $content.FindName('manager_results')
+
+    Show-Dialog -Title (Tr 'Responsable') -Heading ((Tr 'Responsable de {0}') -f $State.Row.Name) -Icon 'user' -Owner $State.Window `
+        -Message (Tr 'Choisissez la personne : elle est enregistrée avec les autres valeurs de la carte (Enregistrer).') -Content $content -PickFrom $list `
+        -OkText (Tr 'Choisir') -State @{ Detail = $State; List = $list } -OnOk {
+        param($dialog)
+        $timer = $dialog.List.Parent.Parent.Parent.Tag.Timer
+        $timer.Stop()
+        $picked = $dialog.List.SelectedItem
+        if ($picked) { Set-UserManagerChoice $dialog.Detail ([string]$picked.DistinguishedName) ([string]$picked.Name) }
+    }
+}
+
+function New-ManagerPickerContent([string]$Domain, [string]$Self) {
+    # The person picker of a user's Responsable and a computer's Géré par: a search box, and the users whose name,
+    # login or email starts with what's typed, in $Domain then the forest's other domains (Find-UserManagerChoice), but
+    # $Self (the object whose manager it is); one is chosen (its manager_results' SelectedItem). Its Tag's Timer is
+    # stopped once it's closed.
     $content = [System.Windows.Markup.XamlReader]::Parse((Expand-Icon @'
 <StackPanel xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation" xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml">
   <Border Style="{StaticResource Field}" Height="34">
@@ -1099,8 +1121,8 @@ function Show-UserManagerDialog($State) {
   <TextBlock x:Name="manager_note" Style="{StaticResource Txt.Muted}" Margin="0,8,0,0" TextWrapping="Wrap" Visibility="Collapsed"/>
 </StackPanel>
 '@))
-    $domains = @(@($State.Row.Domain) + @($script:domainList) | Where-Object { $_ } | Select-Object -Unique)
-    $content.Tag = @{ Domains = $domains; Self = [string]$State.Row.DistinguishedName; Timer = $null }
+    $domains = @(@($Domain) + @($script:domainList) | Where-Object { $_ } | Select-Object -Unique)
+    $content.Tag = @{ Domains = $domains; Self = $Self; Timer = $null }
     $timer = [System.Windows.Threading.DispatcherTimer]::new()
     $timer.Interval = [timespan]::FromMilliseconds(300)
     $timer.Tag = $content
@@ -1109,17 +1131,7 @@ function Show-UserManagerDialog($State) {
     # Searched once the typing pauses, so each letter doesn't query AD.
     $content.FindName('manager_query').Add_TextChanged({ param($box) $timer = $box.Parent.Parent.Parent.Tag.Timer; $timer.Stop(); $timer.Start() })
     $content.Add_Loaded({ param($panel) $null = $panel.FindName('manager_query').Focus() })
-    $list = $content.FindName('manager_results')
-
-    Show-Dialog -Title (Tr 'Responsable') -Heading ((Tr 'Responsable de {0}') -f $State.Row.Name) -Icon 'user' -Owner $State.Window `
-        -Message (Tr 'Choisissez la personne : elle est enregistrée avec les autres valeurs de la carte (Enregistrer).') -Content $content -PickFrom $list `
-        -OkText (Tr 'Choisir') -State @{ Detail = $State; List = $list } -OnOk {
-        param($dialog)
-        $timer = $dialog.List.Parent.Parent.Parent.Tag.Timer
-        $timer.Stop()
-        $picked = $dialog.List.SelectedItem
-        if ($picked) { Set-UserManagerChoice $dialog.Detail ([string]$picked.DistinguishedName) ([string]$picked.Name) }
-    }
+    $content
 }
 
 function Find-UserManagerChoice($Content) {
@@ -1942,11 +1954,12 @@ function Update-OpenGroupDetail($Rows) {
     }
 }
 
-function Show-DetailWindow($State, [string]$Prefix, [string]$Title, $Opener, $Icon) {
-    # The Propriétés window of a user or a group, its controls named after $Prefix (user_detail, group_detail): the
-    # header, the cards that $State.Update fills (a function's name: called with the state alone, it reads in the
-    # background, and again with what was read), Actualiser and F5, Copier ($State.CopyText, a function's name too),
-    # and Échap. It opens at once, the cards read after.
+function Show-DetailWindow($State, [string]$Prefix, [string]$Title, $Opener, $Icon, [string]$Glyph = 'users') {
+    # The Propriétés window of a user, a group or a computer, its controls named after $Prefix (user_detail,
+    # group_detail, computer_detail): the header, the cards that $State.Update fills (a function's name: called with
+    # the state alone, it reads in the background, and again with what was read), Actualiser and F5, Copier
+    # ($State.CopyText, a function's name too), and Échap. It opens at once, the cards read after. $Glyph: the icon in
+    # the header's circle, for a window without initials (a group's, a computer's).
     # A window of its own, as Caractéristiques: the main window stays usable, and several can be side by side. One per
     # object: opening it again brings it to the front. Owned by the main window, which closes them as it closes;
     # $Opener is the window it was opened from, which it opens over and which, when it's another Propriétés, reads itself
@@ -1954,7 +1967,7 @@ function Show-DetailWindow($State, [string]$Prefix, [string]$Title, $Opener, $Ic
     $key = Get-DetailWindowKey $Prefix $State.Row
     if (Show-OpenDetailWindow $key) { return }
     if (-not (Test-DetailWindowRoom $State.Row.Name $Opener)) { return }
-    $root = [System.Windows.Markup.XamlReader]::Parse((Expand-Icon $script:UserDetailXaml.Replace('user_detail_', "$($Prefix)_")))
+    $root = [System.Windows.Markup.XamlReader]::Parse((Expand-Icon $script:UserDetailXaml.Replace('user_detail_', "$($Prefix)_").Replace('{{icon:users:26}}', "{{icon:$($Glyph):26}}")))
     $window = [System.Windows.Window]::new()
     $window.Title = $Title
     $window.Icon = $Icon

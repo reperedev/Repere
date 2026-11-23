@@ -207,6 +207,15 @@ function New-FakeADStore {
         $computer | Add-Member lastLogonTimestamp $(if ($computer.LastLogonDate) { [int64]$computer.LastLogonDate.ToFileTimeUtc() })
         $computer | Add-Member whenCreated $(if ($computer.Name -eq 'ORD-03') { $today.AddDays(-5) } else { $today.AddYears(-2) })
     }
+    # What a computer's Propriétés shows besides: when its account's password was last set (a computer on the domain
+    # changes it every 30 days, so one off for long has an old one: 12 days before its last logon, or when it joined),
+    # when it last changed, who manages ORD-01, and where ORD-01 and ORD-02 are (location).
+    foreach ($computer in $computers) {
+        $computer | Add-Member Location $(switch ($computer.DistinguishedName) { 'CN=ORD-01,OU=Postes,DC=demo,DC=local' { 'Bâtiment A, accueil' } 'CN=ORD-02,OU=Postes,DC=demo,DC=local' { 'Bâtiment A, bureau 204' } })
+        $computer | Add-Member PasswordLastSet $(if ($computer.LastLogonDate) { $computer.LastLogonDate.Date.AddDays(-12) + [timespan]'07:45' } else { $computer.whenCreated })
+        $computer | Add-Member whenChanged $(if ($computer.Name -eq 'ORD-03') { $computer.whenCreated } else { $today.AddDays(-3) + [timespan]'15:20' })
+        $computer | Add-Member ManagedBy $(if ($computer.Name -eq 'ORD-01' -and $computer.DistinguishedName -like '*,DC=demo,DC=local' -and $computer.DistinguishedName -notlike '*DC=nord*') { 'CN=Nathalie Lévy,OU=Utilisateurs,DC=demo,DC=local' })
+    }
 
     # Objects held by a computer: ORD-09 and ORD-07 (the protected one) have BitLocker recovery information,
     # so they aren't leaf objects. ORD-06 is a Hyper-V virtual machine, with the entry Hyper-V keeps under it, and DC1
@@ -1024,20 +1033,44 @@ function Get-ADObject {
 }
 
 function Set-ADComputer {
+    # The description, and what a computer's Propriétés changes: its physical location and who manages it (a DN).
     [CmdletBinding()]
     param(
         [Parameter(Mandatory)]
         [string]$Identity,
         [string]$Description,
+        [string]$Location,
+        [string]$ManagedBy,
         [string[]]$Clear,
         [string]$Server
     )
 
-    Write-FakeADLog @{ Command = 'Set-ADComputer'; Identity = $Identity; Description = $Description; Clear = $Clear -join ','; Server = $Server }
+    Write-FakeADLog @{ Command = 'Set-ADComputer'; Identity = $Identity; Description = $Description; Location = $Location; ManagedBy = $ManagedBy; Clear = $Clear -join ','; Server = $Server }
     $computer = Find-FakeADComputer $Identity (Resolve-FakeADDomain $Server)
     if ($computer.DenyWrite) { throw 'Insufficient access rights to perform the operation' }
     if ($Clear -contains 'Description') { $computer.Description = $null }
     elseif ($PSBoundParameters.ContainsKey('Description')) { $computer.Description = $Description }
+    if ($Clear -contains 'location') { $computer.Location = $null }
+    elseif ($PSBoundParameters.ContainsKey('Location')) { $computer.Location = $Location }
+    if ($Clear -contains 'managedBy') { $computer.ManagedBy = $null }
+    elseif ($PSBoundParameters.ContainsKey('ManagedBy')) { $computer.ManagedBy = $ManagedBy }
+}
+
+function Set-ADObject {
+    # A computer's protection from accidental deletion (its Propriétés › Objet).
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory)]
+        [string]$Identity,
+        [Parameter(Mandatory)]
+        [bool]$ProtectedFromAccidentalDeletion,
+        [string]$Server
+    )
+
+    Write-FakeADLog @{ Command = 'Set-ADObject'; Identity = $Identity; ProtectedFromAccidentalDeletion = $ProtectedFromAccidentalDeletion; Server = $Server }
+    $computer = Find-FakeADComputer $Identity (Resolve-FakeADDomain $Server)
+    if ($computer.DenyWrite) { throw 'Insufficient access rights to perform the operation' }
+    $computer.ProtectedFromAccidentalDeletion = $ProtectedFromAccidentalDeletion
 }
 
 function Enable-ADAccount {
@@ -1992,4 +2025,4 @@ function Clear-ADAccountExpiration {
     $user.AccountExpirationDate = $null
 }
 
-Export-ModuleMember -Function Add-ADGroupMember, Remove-ADGroupMember, Get-ADDomainController, Get-ADDefaultDomainPasswordPolicy, Set-ADAccountExpiration, Clear-ADAccountExpiration, Get-ADUser, Unlock-ADAccount, Set-ADAccountPassword, Set-ADUser, Get-ADGroup, Get-ADForest, Get-ADDomain, Move-ADObject, Get-ADComputer, Get-LapsADPassword, Get-ADOrganizationalUnit, Get-ADObject, Set-ADComputer, Enable-ADAccount, Disable-ADAccount, Remove-ADComputer, Remove-ADObject, Test-Connection, Resolve-DnsName, New-CimSessionOption, New-CimSession, Invoke-Command, Remove-CimSession, Get-CimInstance, Invoke-CimMethod, Test-WSMan, quser, Test-ComputerPort, New-ScheduledTaskAction, New-ScheduledTaskTrigger, New-ScheduledTaskSettingsSet, New-ScheduledTaskPrincipal, Register-ScheduledTask, Get-ScheduledTask, Get-ScheduledTaskInfo, Start-ScheduledTask, Unregister-ScheduledTask, Remove-CimInstance
+Export-ModuleMember -Function Set-ADObject, Add-ADGroupMember, Remove-ADGroupMember, Get-ADDomainController, Get-ADDefaultDomainPasswordPolicy, Set-ADAccountExpiration, Clear-ADAccountExpiration, Get-ADUser, Unlock-ADAccount, Set-ADAccountPassword, Set-ADUser, Get-ADGroup, Get-ADForest, Get-ADDomain, Move-ADObject, Get-ADComputer, Get-LapsADPassword, Get-ADOrganizationalUnit, Get-ADObject, Set-ADComputer, Enable-ADAccount, Disable-ADAccount, Remove-ADComputer, Remove-ADObject, Test-Connection, Resolve-DnsName, New-CimSessionOption, New-CimSession, Invoke-Command, Remove-CimSession, Get-CimInstance, Invoke-CimMethod, Test-WSMan, quser, Test-ComputerPort, New-ScheduledTaskAction, New-ScheduledTaskTrigger, New-ScheduledTaskSettingsSet, New-ScheduledTaskPrincipal, Register-ScheduledTask, Get-ScheduledTask, Get-ScheduledTaskInfo, Start-ScheduledTask, Unregister-ScheduledTask, Remove-CimInstance

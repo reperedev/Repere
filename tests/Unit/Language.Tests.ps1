@@ -82,6 +82,11 @@ BeforeAll {
         # A card id: the key of Get-UserDetailSection, $DetailSectionKeys and $DetailSectionIcons; Get-DetailCardXaml
         # shows it through Tr
         'UserDetails.ps1|Identité'
+        # Card ids of a computer's Propriétés (ComputerDetails.ps1), as Identité
+        'UserDetails.ps1|Système'
+        'UserDetails.ps1|Sécurité'
+        'ComputerDetails.ps1|Système'
+        'ComputerDetails.ps1|Sécurité'
         # Membership key (with Directe, Principale): compared, counted and sorted on here and in UserDetails.ps1,
         # asserted by the tests; shown through Tr (MembershipText)
         'GroupsDialog.ps1|Héritée'

@@ -9,6 +9,7 @@
 - **Nouveautés** : au premier lancement d'une nouvelle version, une fenêtre en donne les grandes lignes, et **Voir le détail** ouvre la version sur GitHub. **Paramètres › Nouveautés** la rouvre.
 
 ### Ordinateurs
+- **Propriétés…** d'un ordinateur (clic droit › Active Directory, ou Alt+Entrée) : ce que l'AD en sait, même éteint. Nom, rôle, système, dernière connexion, mot de passe du compte, LAPS et BitLocker, groupes, emplacement et protection. On y change la description, l'état, l'OU, l'emplacement physique, **Géré par**, les groupes et la protection contre la suppression accidentelle. Le double-clic ouvre toujours **Caractéristiques**.
 - **Prochain nom…** et **Paramètres › SCCM** disent en une ligne quand la console Configuration Manager doit être mise à jour pour la version du site, au lieu d'un long message d'erreur.
 
 ### Utilisateurs

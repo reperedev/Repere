@@ -102,11 +102,12 @@ $script:SettingsShortcuts = @(
     ,@((Tr 'Ordinateurs'), 'F2', (Tr 'Modifier la description…'))
     ,@((Tr 'Ordinateurs'), (Tr 'Suppr'), (Tr "Supprimer de l'AD… (avec confirmation)"))
     ,@((Tr 'Ordinateurs'), (Tr 'Double-clic'), (Tr 'Caractéristiques…'))
+    ,@((Tr 'Ordinateurs'), (Tr 'Alt+Entrée'), (Tr 'Propriétés…'))
     ,@((Tr 'Caractéristiques'), 'F5', (Tr 'Lire de nouveau'))
     ,@((Tr 'Caractéristiques'), 'Ctrl+C', (Tr 'Copier le rapport'))
     ,@((Tr 'Caractéristiques'), (Tr 'Échap'), (Tr 'Arrêter la lecture, puis fermer la fenêtre'))
     ,@((Tr 'Utilisateurs et Groupes'), (Tr 'Double-clic'), (Tr 'Propriétés…'))
-    # Show-DetailWindow (UserDetails.ps1), for a user or a group.
+    # Show-DetailWindow (UserDetails.ps1), for a user, a group or a computer.
     ,@((Tr 'Propriétés'), 'F5', (Tr 'Lire de nouveau'))
     ,@((Tr 'Propriétés'), (Tr 'Échap'), (Tr 'Annuler la modification en cours, puis fermer la fenêtre'))
 )

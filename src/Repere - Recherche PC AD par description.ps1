@@ -145,6 +145,8 @@ Initialize-Theme
 . "$PSScriptRoot\UserDetails.ps1"
 . "$PSScriptRoot\GroupPage.ps1"
 . "$PSScriptRoot\GroupDetails.ps1"
+# Propriétés… of a computer (the Ordinateurs page), in the same window.
+. "$PSScriptRoot\ComputerDetails.ps1"
 # Comparer les groupes… of two users.
 . "$PSScriptRoot\GroupCompare.ps1"
 # Ajouter à un groupe… and Retirer d'un groupe… for the users or computers selected.
@@ -751,6 +753,8 @@ $windowXaml = @'
             <!-- Grouped in submenus, Active Directory first. A group is enabled while one of its items is (Update-MenuItem). -->
             <ContextMenu>
               <MenuItem x:Name="menu_group_ad" Header="Active Directory" HeaderTemplate="{StaticResource Menu.GroupHeader}"><MenuItem.Icon>{{icon:user}}</MenuItem.Icon>
+                <MenuItem x:Name="menu_properties" Header="Propriétés…" InputGestureText="Alt+Entrée" FontWeight="{DynamicResource R.FontWeightStrong}"><MenuItem.Icon>{{icon:monitor}}</MenuItem.Icon></MenuItem>
+                <Separator />
                 <MenuItem x:Name="menu_edit_description" Header="Modifier la description…" InputGestureText="F2"><MenuItem.Icon>{{icon:pencil}}</MenuItem.Icon></MenuItem>
                 <MenuItem x:Name="menu_move" Header="Déplacer vers…"><MenuItem.Icon>{{icon:move}}</MenuItem.Icon></MenuItem>
                 <MenuItem x:Name="menu_groups" Header="Groupes…"><MenuItem.Icon>{{icon:users}}</MenuItem.Icon></MenuItem>

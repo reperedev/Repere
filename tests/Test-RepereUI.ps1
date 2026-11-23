@@ -28,7 +28,7 @@ param(
 
     # Only these sessions (each starts Repère afresh), e.g. -Only UserDetail, GroupPage for a change to the Propriétés
     # windows; all of them without it.
-    [ValidateSet('Search', 'Address', 'Unreachable', 'Parallel', 'Actions', 'Remote', 'WinRMError', 'Shadow', 'Specs', 'SpecsDelay', 'MoveRootsLong', 'SingleDomain', 'Appearance', 'Column', 'Restart', 'Safeguards', 'Advanced', 'SearchMemory', 'UserPage', 'UserDetail', 'GroupPage', 'Settings', 'SettingsSave', 'Density', 'Limit', 'NextName', 'Copy', 'CopyButton', 'UnusedBox', 'BitLocker', 'Changelog')]
+    [ValidateSet('Search', 'Address', 'Unreachable', 'Parallel', 'Actions', 'Remote', 'WinRMError', 'Shadow', 'Specs', 'SpecsDelay', 'MoveRootsLong', 'SingleDomain', 'Appearance', 'Column', 'Restart', 'Safeguards', 'Advanced', 'SearchMemory', 'UserPage', 'UserDetail', 'ComputerDetail', 'GroupPage', 'Settings', 'SettingsSave', 'Density', 'Limit', 'NextName', 'Copy', 'CopyButton', 'UnusedBox', 'BitLocker', 'Changelog')]
     [string[]]$Only,
 
     # Repère in strict mode (REPERE_STRICT): what strict mode refuses fails the checks that reach it.
@@ -781,7 +781,7 @@ function Close-Menu {
 
 # The right-click menu's submenus and their items, in order (separators aren't items).
 $menuGroups = [ordered]@{
-    'Active Directory'      = "Modifier la description…", "Déplacer vers…", "Groupes…", "Ajouter à un groupe…", "Retirer d'un groupe…", "Prochain nom de cette série…", "Activer", "Désactiver…", "Supprimer de l'AD…"
+    'Active Directory'      = "Propriétés…", "Modifier la description…", "Déplacer vers…", "Groupes…", "Ajouter à un groupe…", "Retirer d'un groupe…", "Prochain nom de cette série…", "Activer", "Désactiver…", "Supprimer de l'AD…"
     'Clés et mots de passe' = "Clés BitLocker…", "Mot de passe LAPS…"
     'Outils à distance'     = "Bureau à distance", "Prendre la main…", "Utilisateurs connectés…", "Vérifier en ligne", "Caractéristiques…", "Gestion de l'ordinateur", "Ouvrir C$", "PowerShell à distance", "Services", "Observateur d'événements", "Forcer les stratégies (gpupdate)"
     'Redémarrage'           = "Redémarrer…", "Annuler le redémarrage"
@@ -3406,6 +3406,203 @@ function Get-DialogRow($Dialog) {
     @($Dialog.FindAll($Descendants, $isRow) | Sort-Object { $_.Current.BoundingRectangle.Top } | ForEach-Object {
         (@($_.FindAll($Descendants, $isCell) | ForEach-Object { $_.Current.Name })) -join ' | '
     })
+}
+
+function Open-ComputerDetail([string]$Name, [string]$Via = 'menu') {
+    # Propriétés of a computer of the results: from the right-click menu, or Alt+Entrée on the grid (posted as Windows
+    # sends it, Alt held: WM_SYSKEYDOWN with the context bit).
+    Select-ResultRow $Name
+    if ($Via -eq 'menu') { Invoke-ResultMenuItem 'Propriétés…' }
+    else {
+        (Find-Control 'data_grid').SetFocus()
+        $handle = [IntPtr]$window.Current.NativeWindowHandle
+        [RepereWindows]::PostMessage($handle, 0x0104, [IntPtr]0x0D, [IntPtr]0x20000001) | Out-Null
+        [RepereWindows]::PostMessage($handle, 0x0105, [IntPtr]0x0D, [IntPtr]0xE0000001) | Out-Null
+    }
+    $details = Wait-Dialog "Propriétés de $Name"
+    Wait-DetailRead $details
+    $details
+}
+
+function Get-ComputerDetailValue($Details, [string]$Id) {
+    Wait-DetailRead $Details
+    (Get-DialogPart $Details "computer_detail_$Id").Current.Name
+}
+
+function Wait-ComputerDetailValue($Details, [string]$Id, [string]$Expected) {
+    # A value the window shows once a change is made and it has read the computer again (5 s at most): what it shows.
+    for ($i = 0; $i -lt 25; $i++) {
+        $value = Get-ComputerDetailValue $Details $Id
+        if ($value -eq $Expected) { break }
+        Start-Sleep -Milliseconds 200
+    }
+    $value
+}
+
+function Get-ComputerDetailGroup($Details) {
+    # The groups the window lists, each « name | membership », top to bottom.
+    Wait-DetailRead $Details
+    $isText = [System.Windows.Automation.PropertyCondition]::new($AE::ControlTypeProperty, [System.Windows.Automation.ControlType]::Text)
+    @($Details.FindAll($Descendants, $isText) | Where-Object { $_.Current.AutomationId -match '^computer_group_\d+$' } |
+        Sort-Object { $_.Current.BoundingRectangle.Top } | ForEach-Object { $_.Current.Name })
+}
+
+function Test-ComputerDetail {
+    # Propriétés of a computer (#1): what it shows of the fake AD's computers, without reading the LAPS password nor
+    # writing anything, then each change it makes, on the PDC, and the grid's row following.
+    Select-Domain 'demo.local'
+    Invoke-PrefixSearch 'ORD-0'
+
+    Invoke-Check "Propriétés… (right-click menu) shows ORD-01 as AD has it, and changes nothing" {
+        param($problems)
+        $queriesBefore = @(Get-LoggedQuery).Count
+        $details = Open-ComputerDetail 'ORD-01'
+        try {
+            $expected = [ordered]@{
+                name = 'ORD-01'; sam = 'ORD-01$'; dns = 'ord-01.demo.local'; role = 'Poste de travail'; state = 'Actif'; physical = 'Bâtiment A, accueil'
+                managed_by = 'Nathalie Lévy'; location = 'Postes'; canonical = 'demo.local/Postes/ORD-01'; protected = 'Non protégé'; bitlocker = 'Aucune clé'
+            }
+            foreach ($id in $expected.Keys) {
+                $value = Get-ComputerDetailValue $details $id
+                if ($value -ne $expected[$id]) { $problems.Add("$id reads '$value'") }
+            }
+            $laps = Get-ComputerDetailValue $details 'laps'
+            if ($laps -notlike 'Windows LAPS · expire le *') { $problems.Add("laps reads '$laps'") }
+            $groups = (Get-ComputerDetailGroup $details) -join ', '
+            $wanted = 'GG-Logiciel-Office | Directe, GG-Postes-Accueil | Directe, Liste-Inventaire | Directe, Ordinateurs du domaine | Principale, DL-Imprimantes-Accueil | Héritée, GU-Postes-Nord | Héritée'
+            if ($groups -ne $wanted) { $problems.Add("groups: $groups") }
+            if ($ScreenshotDirectory) { Save-Screenshot 'proprietes-ordinateur' $details }
+            $calls = @(Get-LoggedQuery | Select-Object -Skip $queriesBefore)
+            $writes = @($calls | Where-Object { $_.Command -notlike 'Get-*' })
+            if ($writes.Count) { $problems.Add("AD was changed: $(($writes | ForEach-Object Command) -join ', ')") }
+            if ($calls | Where-Object Command -eq 'Get-LapsADPassword') { $problems.Add('the LAPS password was read') }
+            $reads = @($calls | Where-Object { $_.Command -eq 'Get-ADComputer' -and $_.Identity })
+            if (-not $reads.Count -or $reads[0].Server -ne 'dc1.demo.local') { $problems.Add("the computer was read on: $(@($reads | ForEach-Object Server) -join ', ')") }
+        }
+        finally { Close-UserDetail $details }
+    }
+
+    Invoke-Check 'Alt+Entrée opens Propriétés of the computer selected; again, it brings the same window back' {
+        param($problems)
+        $details = Open-ComputerDetail 'ORD-03' 'key'
+        try {
+            if ((Get-ComputerDetailValue $details 'last_logon') -ne 'Jamais') { $problems.Add("ORD-03's last logon reads '$(Get-ComputerDetailValue $details 'last_logon')'") }
+            $null = Open-ComputerDetail 'ORD-03' 'key'
+            $open = @(Get-AppWindow | Where-Object { $_.Current.Name -eq 'Propriétés de ORD-03' })
+            if ($open.Count -ne 1) { $problems.Add("$($open.Count) windows Propriétés de ORD-03") }
+        }
+        finally { Close-UserDetail $details }
+    }
+
+    Invoke-Check 'From Propriétés: the description (and its row), the physical location, managed by and the protection, on the PDC' {
+        param($problems)
+        $details = Open-ComputerDetail 'ORD-02'
+        $queriesBefore = @(Get-LoggedQuery).Count
+        try {
+            # Description…: the page's dialog, over the window; the grid's row follows.
+            Invoke-Element (Get-DialogPart $details 'computer_detail_edit')
+            $dialog = Wait-OwnedDialog $details 'Modifier la description'
+            (Get-DialogPart $dialog 'dialog_text').GetCurrentPattern([System.Windows.Automation.ValuePattern]::Pattern).SetValue('Poste de test')
+            Close-OwnedDialog $dialog 'dialog_ok'
+            $value = Wait-ComputerDetailValue $details 'description' 'Poste de test'
+            if ($value -ne 'Poste de test') { $problems.Add("after Description…, it reads '$value'") }
+            if ((Get-ResultCell 'ORD-02' 2) -ne 'Poste de test') { $problems.Add("the row shows '$(Get-ResultCell 'ORD-02' 2)'") }
+            # Emplacement…: cleared, then set.
+            foreach ($place in '', 'Salle 12') {
+                Invoke-Element (Get-DialogPart $details 'computer_detail_physical_edit')
+                $dialog = Wait-OwnedDialog $details 'Emplacement physique'
+                (Get-DialogPart $dialog 'dialog_text').GetCurrentPattern([System.Windows.Automation.ValuePattern]::Pattern).SetValue($place)
+                Close-OwnedDialog $dialog 'dialog_ok'
+                $shown = if ($place) { $place } else { '—' }
+                $value = Wait-ComputerDetailValue $details 'physical' $shown
+                if ($value -ne $shown) { $problems.Add("after Emplacement… « $place », it reads '$value'") }
+            }
+            # Géré par…: a person found by a search.
+            Invoke-Element (Get-DialogPart $details 'computer_detail_manager')
+            $dialog = Wait-OwnedDialog $details 'Géré par'
+            (Get-DialogPart $dialog 'manager_query').GetCurrentPattern([System.Windows.Automation.ValuePattern]::Pattern).SetValue('julie')
+            $isItem = [System.Windows.Automation.PropertyCondition]::new($AE::ControlTypeProperty, [System.Windows.Automation.ControlType]::ListItem)
+            $item = $null
+            for ($i = 0; $i -lt 25 -and -not $item; $i++) {
+                Start-Sleep -Milliseconds 200
+                $item = @((Get-DialogPart $dialog 'manager_results').FindAll($Descendants, $isItem) | Where-Object { $_.Current.Name -eq 'Julie Bertrand' })[0]
+            }
+            if (-not $item) { $problems.Add('Géré par… found no Julie Bertrand'); Close-OwnedDialog $dialog 'dialog_cancel' }
+            else {
+                $item.GetCurrentPattern([System.Windows.Automation.SelectionItemPattern]::Pattern).Select()
+                Close-OwnedDialog $dialog 'dialog_ok'
+                $value = Wait-ComputerDetailValue $details 'managed_by' 'Julie Bertrand'
+                if ($value -ne 'Julie Bertrand') { $problems.Add("after Géré par…, it reads '$value'") }
+            }
+            # Protéger at once, Ne plus protéger… after its confirmation.
+            Invoke-Element (Get-DialogPart $details 'computer_detail_protect')
+            $value = Wait-ComputerDetailValue $details 'protected' 'Protégé contre la suppression accidentelle'
+            if ($value -ne 'Protégé contre la suppression accidentelle') { $problems.Add("after Protéger, it reads '$value'") }
+            Invoke-Element (Get-DialogPart $details 'computer_detail_protect')
+            $dialog = Wait-OwnedDialog $details 'Protection'
+            Close-OwnedDialog $dialog 'dialog_ok'
+            $value = Wait-ComputerDetailValue $details 'protected' 'Non protégé'
+            if ($value -ne 'Non protégé') { $problems.Add("after Ne plus protéger…, it reads '$value'") }
+            $writes = @(Get-LoggedQuery | Select-Object -Skip $queriesBefore | Where-Object { $_.Command -in 'Set-ADComputer', 'Set-ADObject' })
+            $sent = @($writes | ForEach-Object { "$($_.Command) $($_.Server)" } | Select-Object -Unique)
+            if ($writes.Count -ne 6 -or ($sent -join ', ') -ne 'Set-ADComputer dc1.demo.local, Set-ADObject dc1.demo.local') { $problems.Add("sent: $($writes | ConvertTo-Json -Compress)") }
+        }
+        finally { Close-UserDetail $details }
+    }
+
+    Invoke-Check 'From Propriétés: Ajouter à un groupe… then Retirer…' {
+        param($problems)
+        $details = Open-ComputerDetail 'ORD-02'
+        try {
+            Invoke-Element (Get-DialogPart $details 'computer_group_add')
+            $dialog = Wait-OwnedDialog $details 'Ajouter à un groupe'
+            (Get-DialogPart $dialog 'group_query').GetCurrentPattern([System.Windows.Automation.ValuePattern]::Pattern).SetValue('Accueil')
+            Start-Sleep -Milliseconds 1200
+            Select-GroupChoice $dialog @('GG-Postes-Accueil')
+            Close-OwnedDialog $dialog 'dialog_ok'
+            for ($i = 0; $i -lt 25 -and (Get-ComputerDetailGroup $details) -notcontains 'GG-Postes-Accueil | Directe'; $i++) { Start-Sleep -Milliseconds 200 }
+            $groups = @(Get-ComputerDetailGroup $details)
+            if ($groups -notcontains 'GG-Postes-Accueil | Directe') { $problems.Add("after Ajouter, the groups: $($groups -join ', ')") }
+            $index = [array]::IndexOf($groups, 'GG-Postes-Accueil | Directe')
+            if ($index -ge 0) {
+                (Get-DialogPart $details "computer_group_pick_$index").GetCurrentPattern([System.Windows.Automation.TogglePattern]::Pattern).Toggle()
+                Start-Sleep -Milliseconds 200
+                $label = (Get-DialogPart $details 'computer_group_remove_label').Current.Name
+                if ($label -ne 'Retirer (1)…') { $problems.Add("one ticked, the button says '$label'") }
+                Invoke-Element (Get-DialogPart $details 'computer_group_remove')
+                $dialog = Wait-OwnedDialog $details 'Retirer du groupe'
+                Close-OwnedDialog $dialog 'dialog_ok'
+                for ($i = 0; $i -lt 25 -and (Get-ComputerDetailGroup $details) -contains 'GG-Postes-Accueil | Directe'; $i++) { Start-Sleep -Milliseconds 200 }
+                if ((Get-ComputerDetailGroup $details) -contains 'GG-Postes-Accueil | Directe') { $problems.Add('after Retirer, it is still listed') }
+            }
+        }
+        finally { Close-UserDetail $details }
+    }
+
+    Invoke-Check 'Propriétés at Grande and Très grande text: the cards and their buttons stay within the window' {
+        param($problems)
+        $details = Open-ComputerDetail 'ORD-01'
+        $settingsWindow = Open-SettingsSection 'appearance'
+        try {
+            foreach ($size in 'text_size_large', 'text_size_larger') {
+                Invoke-Element (Get-DialogPart $settingsWindow $size)
+                Start-Sleep -Milliseconds 700
+                $frame = $details.Current.BoundingRectangle
+                foreach ($id in 'computer_detail_toggle', 'computer_detail_edit', 'computer_detail_move', 'computer_detail_physical_edit', 'computer_detail_manager', 'computer_detail_laps_open', 'computer_detail_bitlocker_open') {
+                    $rect = (Get-DialogPart $details $id).Current.BoundingRectangle
+                    if ($rect.Right -gt $frame.Right -or $rect.Left -lt $frame.Left) { $problems.Add("${size}: $id is at $rect, in a window at $frame") }
+                }
+                if ($ScreenshotDirectory) { Save-Screenshot "proprietes-ordinateur-$size" $details }
+            }
+        }
+        finally {
+            Invoke-Element (Get-DialogPart $settingsWindow 'text_size_normal')
+            Start-Sleep -Milliseconds 500
+            $settingsWindow.GetCurrentPattern([System.Windows.Automation.WindowPattern]::Pattern).Close()
+            Start-Sleep -Milliseconds 300
+            Close-UserDetail $details
+        }
+    }
 }
 
 function Test-GroupsDialog {
@@ -9076,6 +9273,13 @@ try {
         # Propriétés of a user: lockout, groups and expiration, from the fake AD as it starts.
         Start-App
         Test-UserDetail
+        Stop-App
+    }
+
+    if (Test-Session 'ComputerDetail') {
+        # Propriétés of a computer: its cards, and what it changes, from the fake AD as it starts.
+        Start-App
+        Test-ComputerDetail
         Stop-App
     }
 
