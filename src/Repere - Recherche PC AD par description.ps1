@@ -34,7 +34,7 @@ param(
 
 # Repère's version, shown in Paramètres; tools\New-RepereRelease.ps1 names the release after it (CHANGELOG.md says
 # what each one brought).
-$script:RepereVersion = '0.15.0'
+$script:RepereVersion = '0.15.1'
 
 # For the UI tests' -Strict: a variable never set, or a property an object doesn't have, is an error instead of a
 # silent $null.

@@ -1,22 +1,21 @@
 ﻿# Journal des versions
 
-## À venir
+## 0.15.1 — 2026-11-23
 
 ### Ordinateurs, Utilisateurs et Groupes
-- **L'écran de démarrage et la fenêtre s'ouvrent toujours au centre de l'écran** d'où Repère est lancé (celui de la souris), et non plus là où la fenêtre a été fermée. La fenêtre garde sa taille, et s'ouvre agrandie si elle l'était.
-- **La fenêtre s'ouvre devant les autres programmes même après avoir déplacé l'écran de démarrage** : elle s'ouvrait derrière, sous un programme agrandi.
-- **L'info-bulle du temps de recherche** (« en 1 234 ms ») est un petit tableau : un domaine par ligne, les temps alignés en colonnes, même avec un long nom de domaine.
-- **Nouveautés** : au premier lancement d'une nouvelle version, une fenêtre en donne les grandes lignes, et **Voir le détail** ouvre la version sur GitHub. **Paramètres › Nouveautés** la rouvre.
+- **Nouveautés** : une fenêtre résume ce qui a changé au premier lancement d'une nouvelle version. **Paramètres › Nouveautés** la rouvre.
+- **La fenêtre s'ouvre au centre de l'écran de la souris**, devant les autres programmes, à sa taille habituelle.
+- **L'info-bulle du temps de recherche** donne un domaine par ligne, les temps alignés.
 
 ### Ordinateurs
-- **Propriétés…** d'un ordinateur (clic droit › Active Directory, ou Alt+Entrée) : ce que l'AD en sait, même éteint. Nom, rôle, système, dernière connexion, mot de passe du compte, LAPS et BitLocker, groupes, emplacement et protection. On y change la description, l'état, l'OU, l'emplacement physique, **Géré par**, les groupes et la protection contre la suppression accidentelle. Le double-clic ouvre toujours **Caractéristiques**.
-- **Prochain nom…** et **Paramètres › SCCM** disent en une ligne quand la console Configuration Manager doit être mise à jour pour la version du site, au lieu d'un long message d'erreur.
+- **Propriétés…** (clic droit › Active Directory, ou Alt+Entrée) : les propriétés AD d'un ordinateur, même éteint. On y change la description, l'état, l'OU, l'emplacement, **Géré par**, les groupes et la protection contre la suppression.
+- **Prochain nom…** et **Paramètres › SCCM** disent en une ligne quand mettre à jour la console Configuration Manager.
 
 ### Utilisateurs
-- **Le nouveau mot de passe est masqué** dans la fenêtre qui le donne après **Nouveau mot de passe…**, pour qu'on ne le lise pas par-dessus l'épaule. L'œil l'affiche et **Copier** le copie sans l'afficher.
+- **Le nouveau mot de passe est masqué** après **Nouveau mot de passe…** : l'œil l'affiche, **Copier** le copie.
 
 ### Utilisateurs et Groupes
-- **Propriétés** : au-delà de 10 groupes, **Groupes** (et **Membre de** pour un groupe) a une case pour filtrer par nom ou description, accents ou non. Les cases cochées le restent.
+- **Propriétés** : au-delà de 10 groupes, une case filtre **Groupes** et **Membre de** par nom ou description.
 
 ## 0.15.0 — 2026-11-19
 
