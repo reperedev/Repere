@@ -1,5 +1,5 @@
 ﻿# The actions on the selected computers (the Ordinateurs page), from the action bar or the right-click menu, with the
-# current user's AD rights: Modifier la description, Déplacer vers…, Groupes…, Ajouter à un groupe… and Retirer d'un
+# current user's AD rights: Propriétés… (ComputerDetails.ps1), Modifier la description, Déplacer vers…, Groupes…, Ajouter à un groupe… and Retirer d'un
 # groupe… (SelectionGroups.ps1), Prochain nom de cette série… (NextName.ps1), Clés BitLocker…, Mot de passe LAPS…,
 # Activer / Désactiver, Supprimer de l'AD, Vérifier en ligne, Caractéristiques, Prendre la main…, Utilisateurs
 # connectés…, the remote tools, Forcer les stratégies, Redémarrer… and Copier le nom; those that take a while run in the
@@ -12,6 +12,7 @@
 
 $selectionText = $root.FindName('selection_text')
 
+$menuProperties      = $root.FindName('menu_properties')
 $menuEditDescription = $root.FindName('menu_edit_description')
 $menuMove            = $root.FindName('menu_move')
 $menuGroupsItem      = $root.FindName('menu_groups')
@@ -281,35 +282,36 @@ function Read-ComputerGuard($Computers, [bool]$WithContents) {
     @{ Allowed = @($guard.Allowed | ForEach-Object { $_.Index }); Skipped = @($guard.Skipped); Contents = $contents }
 }
 
-function Start-ComputerGuard([string]$Title, [string]$Icon, $Computers, [scriptblock]$OnAllowed, [switch]$WithContents) {
+function Start-ComputerGuard([string]$Title, [string]$Icon, $Computers, [scriptblock]$OnAllowed, [switch]$WithContents, [System.Windows.Window]$Owner, $Context) {
     # Désactiver, Supprimer de l'AD and Déplacer vers: their guard read in the background (Read-ComputerGuard), the
-    # window usable meanwhile, then on the window's thread & $OnAllowed $allowed $skipped $contents, or Show-ComputerGuard
-    # when every computer is left alone. One at a time: another click on any of the three while it reads is ignored
-    # (Start-WindowRead), so a double click asks once. A read that fails allows nothing: each computer is said not done,
-    # as a domain AD can't say the controllers of is refused.
+    # window usable meanwhile, then on the window's thread & $OnAllowed $allowed $skipped $contents $Context, or
+    # Show-ComputerGuard when every computer is left alone. One at a time: another click on any of the three while it
+    # reads is ignored (Start-WindowRead), so a double click asks once. A read that fails allows nothing: each computer
+    # is said not done, as a domain AD can't say the controllers of is refused. $Owner: the window what it says opens
+    # over (a computer's Propriétés), the main one without.
     $Computers = @($Computers)
     if (-not $Computers.Count) { return }
     Start-WindowRead -Kind 'ComputerGuard' -Command 'Read-ComputerGuard' -Arguments @(@(ConvertTo-ReadComputer $Computers), [bool]$WithContents) `
         -Functions 'Get-ComputerGuard', 'Get-DomainControllerDN', 'Get-SelfComputerDN', 'Test-SelfAccount', 'Get-DomainOfDN', 'Get-LdapText', 'Read-ComputerContent', 'Format-BitLockerKey', 'Get-BitLockerKey' `
-        -Variables @{ Self = $script:Self } -Context @{ Computers = $Computers; Title = $Title; Icon = $Icon; OnAllowed = $OnAllowed } -OnDone {
+        -Variables @{ Self = $script:Self } -Context @{ Computers = $Computers; Title = $Title; Icon = $Icon; OnAllowed = $OnAllowed; Owner = $Owner; Context = $Context } -OnDone {
         param($context, $guard, $problem)
         if ($problem -or -not $guard) {
             $reason = if ($problem) { $problem } else { Tr 'AD n''a rien renvoyé' }
-            Show-ActionReport @($context.Computers | ForEach-Object { (Tr '✖ {0} : {1}') -f $_.ComputerName, $reason }) $context.Title
+            Show-ActionReport @($context.Computers | ForEach-Object { (Tr '✖ {0} : {1}') -f $_.ComputerName, $reason }) $context.Title -Owner $context.Owner
             return
         }
         $allowed = @($guard.Allowed | ForEach-Object { $context.Computers[$_] })
         if (-not $allowed.Count) {
-            if ($guard.Skipped.Count) { Show-ComputerGuard $context.Title $context.Icon $guard.Skipped }
+            if ($guard.Skipped.Count) { Show-ComputerGuard $context.Title $context.Icon $guard.Skipped $context.Owner }
             return
         }
-        & $context.OnAllowed $allowed @($guard.Skipped) $guard.Contents
+        & $context.OnAllowed $allowed @($guard.Skipped) $guard.Contents $context.Context
     }
 }
 
-function Show-ComputerGuard([string]$Title, [string]$Icon, [string[]]$Skipped) {
+function Show-ComputerGuard([string]$Title, [string]$Icon, [string[]]$Skipped, [System.Windows.Window]$Owner) {
     # Every computer selected is one the action leaves alone: said, and nothing else happens.
-    Show-Dialog -Title $Title -Icon $Icon -Tone 'warn' -Heading ((Tr '{0} : rien à faire') -f $Title) `
+    Show-Dialog -Title $Title -Icon $Icon -Tone 'warn' -Heading ((Tr '{0} : rien à faire') -f $Title) -Owner $Owner `
         -Message ((Tr 'Repère ne touche pas à ces ordinateurs, pour ne pas couper le domaine ou votre session : {0}.') -f ($Skipped -join ', '))
 }
 
@@ -321,18 +323,6 @@ function Get-ComputerGuardNote([string[]]$Skipped) {
 # Windows LAPS's Get-LapsADPassword comes with Windows 11 22H2, Windows 10 and Server 2019 since April 2023. Without it,
 # only legacy LAPS passwords can be read.
 $hasLapsCommand = [bool](Get-Command Get-LapsADPassword -ErrorAction SilentlyContinue)
-
-function Format-LapsDate($Date) {
-    # An expiration as it's shown, or $null without one. AD keeps it as a FILETIME, Get-LapsADPassword as a date.
-    if ($null -eq $Date -or "$Date" -eq '' -or "$Date" -eq '0') { return }
-    if ($Date -isnot [datetime]) {
-        # AD's « never » is past what a date can hold: none, and the password still reads.
-        try { $Date = [datetime]::FromFileTime([long]"$Date") } catch { return }
-    }
-    elseif ($Date.Kind -eq 'Utc') { $Date = $Date.ToLocalTime() }
-    $text = Format-TextDate $Date
-    if ($Date -lt (Get-Date)) { (Tr 'a expiré le {0}') -f $text } else { (Tr 'expire le {0}') -f $text }
-}
 
 function Get-LapsPassword([string]$DistinguishedName, [string]$Server) {
     # The computer's local administrator password: Kind (Windows LAPS or LAPS hérité, $null without one), Account,
@@ -396,6 +386,7 @@ function Update-MenuItem {
     }
     # One computer at a time, so a large selection can't open a window per computer.
     $single = $count -eq 1
+    $menuProperties.IsEnabled = $single
     $menuEditDescription.IsEnabled = $hasSelection
     $menuMove.IsEnabled = $hasSelection
     $menuGroupsItem.IsEnabled = $single
@@ -1087,42 +1078,58 @@ function Update-WinRMLease {
 }
 $winrmTimer.Add_Tick({ Update-WinRMLease })
 
-function Invoke-ComputerWrite([string]$Action, $Computers, $Value) {
+function Invoke-ComputerWrite([string]$Action, $Computers, $Value, [string]$Server) {
     # On a search runspace: the change, one computer at a time, each in its domain. Results, in their order: each one's
-    # Problem ($null when it went well) and how many Children it held.
+    # Problem ($null when it went well) and how many Children it held. $Server: the DC a Propriétés reads from (its
+    # domain's PDC: Get-UserServer), for its one computer, so the window read again shows the change; when it doesn't
+    # answer, any DC of the domain.
     @{ Results = @(foreach ($computer in $Computers) {
-        try {
-            $children = 0
-            $null = switch ($Action) {
-                'Enable' { Enable-ADAccount -Server $computer.Domain -Identity $computer.OU -ErrorAction Stop }
-                'Disable' { Disable-ADAccount -Server $computer.Domain -Identity $computer.OU -ErrorAction Stop }
+        $change = {
+            param([string]$At)
+            switch ($Action) {
+                'Enable' { $null = Enable-ADAccount -Server $At -Identity $computer.OU -ErrorAction Stop; 0 }
+                'Disable' { $null = Disable-ADAccount -Server $At -Identity $computer.OU -ErrorAction Stop; 0 }
                 'Description' {
-                    if ($Value) { Set-ADComputer -Server $computer.Domain -Identity $computer.OU -Description $Value -ErrorAction Stop }
-                    else { Set-ADComputer -Server $computer.Domain -Identity $computer.OU -Clear Description -ErrorAction Stop }
+                    if ($Value) { $null = Set-ADComputer -Server $At -Identity $computer.OU -Description $Value -ErrorAction Stop }
+                    else { $null = Set-ADComputer -Server $At -Identity $computer.OU -Clear Description -ErrorAction Stop }
+                    0
                 }
                 'Move' {
                     # Checked first, as for a deletion: the protection forbids moves too, and is reported, never removed.
-                    $object = Get-ADObject -Server $computer.Domain -Identity $computer.OU -Properties ProtectedFromAccidentalDeletion -ErrorAction Stop
+                    $object = Get-ADObject -Server $At -Identity $computer.OU -Properties ProtectedFromAccidentalDeletion -ErrorAction Stop
                     if ($object.ProtectedFromAccidentalDeletion) { throw (Tr 'protégé contre la suppression accidentelle, non déplacé') }
-                    Move-ADObject -Server $computer.Domain -Identity $computer.OU -TargetPath $Value -ErrorAction Stop
+                    $null = Move-ADObject -Server $At -Identity $computer.OU -TargetPath $Value -ErrorAction Stop
+                    0
                 }
-                'Remove' { $children = Remove-ComputerFromAD $computer.OU $computer.Domain }
+                'Remove' { Remove-ComputerFromAD $computer.OU $At }
             }
-            @{ Problem = $null; Children = $children }
+        }
+        try {
+            $at = if ($Server) { $Server } else { $computer.Domain }
+            $children = try { & $change $at }
+                        catch {
+                            if ($at -eq $computer.Domain -or -not (Test-ServerDown $_)) { throw }
+                            & $change $computer.Domain
+                        }
+            @{ Problem = $null; Children = [int]$children }
         }
         catch { @{ Problem = $_.Exception.Message; Children = 0 } }
     }) }
 }
 
-function Start-ComputerWrite([string]$Action, $Computers, $Value, [string]$Title, [scriptblock]$Done, [string[]]$Lines, [string[]]$Outcome) {
+function Start-ComputerWrite([string]$Action, $Computers, $Value, [string]$Title, [scriptblock]$Done, [string[]]$Lines, [string[]]$Outcome, [hashtable]$Detail) {
     # A change to many computers, in the background (Invoke-ComputerWrite): a slow DC doesn't freeze the window, and a
     # search that ends waits, as for a dialog, before replacing the rows it's changing. Then, on the window's thread,
     # & $Done $computer $result $Value for each that went well, which updates its row and gives its line of the report.
     # $Lines: lines the report starts with. $Outcome: the notice's heading when all went well (Show-ActionReport).
+    # $Detail: the computer's Propriétés it was made from, which reads it again and says what it did
+    # (Complete-ComputerDetailChange); made on the DC it reads from.
+    $server = if ($Detail) { Get-UserServer @($Computers)[0].Domain }
     $script:search.Dialogs++
     try {
-        Start-WindowRead -Kind "$Action $([guid]::NewGuid())" -Command 'Invoke-ComputerWrite' -Arguments @($Action, @(ConvertTo-ReadComputer $Computers), $Value) `
-            -Functions 'Remove-ComputerFromAD', 'Test-GroupRefusal', 'Test-SelfAccount', 'Get-DomainOfDN' -Variables @{ ComputerNotLeaf = $script:ComputerNotLeaf; Self = $script:Self } -Context @{ Computers = @($Computers); Value = $Value; Title = $Title; Done = $Done; Lines = $Lines; Outcome = $Outcome } -OnDone {
+        Start-WindowRead -Kind "$Action $([guid]::NewGuid())" -Command 'Invoke-ComputerWrite' -Arguments @($Action, @(ConvertTo-ReadComputer $Computers), $Value, $server) `
+            -Functions 'Remove-ComputerFromAD', 'Test-GroupRefusal', 'Test-SelfAccount', 'Get-DomainOfDN', 'Test-ServerDown' -Variables @{ ComputerNotLeaf = $script:ComputerNotLeaf; Self = $script:Self } `
+            -Context @{ Computers = @($Computers); Value = $Value; Title = $Title; Done = $Done; Lines = $Lines; Outcome = $Outcome; Detail = $Detail } -OnDone {
             param($write, $read, $problem)
             $script:search.Dialogs--
             $answers = @(if ($read) { $read.Results })
@@ -1133,7 +1140,8 @@ function Start-ComputerWrite([string]$Action, $Computers, $Value, [string]$Title
                 else { & $write.Done $computer $answers[$i] $write.Value }
             })
             Update-ChangedRow
-            Show-ActionReport $report $write.Title -Outcome $write.Outcome
+            if ($write.Detail) { Complete-ComputerDetailChange $write.Detail $report $write.Title $write.Outcome }
+            else { Show-ActionReport $report $write.Title -Outcome $write.Outcome }
         }
     }
     catch {
@@ -1142,13 +1150,76 @@ function Start-ComputerWrite([string]$Action, $Computers, $Value, [string]$Title
     }
 }
 
-function Set-ComputerEnabled($Computers, [bool]$Enabled) {
-    # Enables or disables each computer in its domain, then updates its row (Compte column).
+function Set-ComputerEnabled($Computers, [bool]$Enabled, [hashtable]$Detail) {
+    # Enables or disables each computer in its domain, then updates its row (Compte column). $Detail: from its
+    # Propriétés (Start-ComputerWrite).
     Start-ComputerWrite $(if ($Enabled) { 'Enable' } else { 'Disable' }) $Computers $Enabled $(if ($Enabled) { Tr 'Activer' } else { Tr 'Désactiver' }) {
         param($computer, $result, $value)
         Set-RowState $computer $value
         "✔ $($computer.ComputerName)"
-    } -Outcome $(if ($Enabled) { (Tr 'Activé'), (Tr 'Activés') } else { (Tr 'Désactivé'), (Tr 'Désactivés') })
+    } -Outcome $(if ($Enabled) { (Tr 'Activé'), (Tr 'Activés') } else { (Tr 'Désactivé'), (Tr 'Désactivés') }) -Detail $Detail
+}
+
+function Request-ComputerDisable($Computers, [hashtable]$Detail) {
+    # Désactiver…: the enabled ones, after the guard (never a domain controller nor this computer) and a confirmation,
+    # Annuler the default: reversible, but it cuts the computer off the domain. Over its Propriétés, from there ($Detail).
+    $owner = if ($Detail) { $Detail.Window }
+    Start-ComputerGuard (Tr 'Désactiver') 'ban' @($Computers | Where-Object { $_.IsOn }) -Owner $owner -Context $Detail {
+        param($selected, $skipped, $contents, $detail)
+        $names = @($selected | ForEach-Object { $_.ComputerName })
+        $heading = if ($names.Count -eq 1) { (Tr 'Désactiver {0} ?') -f $names[0] } else { (Tr 'Désactiver {0} ordinateurs ?') -f $names.Count }
+        $message = (Tr "Un ordinateur désactivé ne peut plus s'authentifier au domaine : les utilisateurs du domaine ne peuvent plus s'y connecter. On peut le réactiver ensuite (Activer).") + (Get-ComputerGuardNote $skipped)
+        Show-Dialog -Title (Tr 'Désactiver') -Heading $heading -Names $(if ($names.Count -gt 1) { $names }) -Message $message -Icon 'ban' -Tone 'danger' -OkText (Tr 'Désactiver') -CancelIsDefault `
+            -Owner $(if ($detail) { $detail.Window }) -State @{ Selected = $selected; Detail = $detail } -OnOk {
+            param($state)
+            Set-ComputerEnabled $state.Selected $false $state.Detail
+        }
+    }
+}
+
+function Request-ComputerMove($Computers, [hashtable]$Detail) {
+    # Déplacer vers…: one domain at a time, as AD only moves a computer within its own domain. Never a domain controller
+    # (out of Domain Controllers, its policy no longer applies) nor the computer Repère runs on. Over its Propriétés,
+    # from there ($Detail).
+    $owner = if ($Detail) { $Detail.Window }
+    Start-ComputerGuard (Tr 'Déplacer') 'move' $Computers -Owner $owner -Context $Detail {
+        param($selected, $skipped, $contents, $detail)
+        $domains = @($selected | ForEach-Object { $_.Domain } | Select-Object -Unique)
+        if ($domains.Count -gt 1) {
+            Show-Dialog -Title (Tr 'Déplacer') -Icon 'move' -Tone 'warn' -Message ((Tr 'Les ordinateurs sélectionnés sont dans {0} domaines ({1}). Un ordinateur ne se déplace que dans son domaine : déplacez-les un domaine à la fois.') -f $domains.Count, ($domains -join ', '))
+            return
+        }
+        Show-MoveDialog $selected $skipped $detail
+    }
+}
+
+function Show-ComputerDescriptionDialog($Computers, [hashtable]$Detail) {
+    # Modifier la description: one computer's, its own text to change, or several at once, replaced by the same. Over
+    # its Propriétés, from there ($Detail).
+    $names = @($Computers | ForEach-Object { $_.ComputerName })
+    if ($names.Count -eq 1) {
+        $heading = (Tr 'Description de {0}') -f $names[0]
+        $message = ''
+        $text = $Computers[0].Description
+        $readAs = (Tr 'Description de {0} :') -f $names[0]
+    }
+    else {
+        $heading = (Tr 'Description de {0} ordinateurs') -f $names.Count
+        $message = Tr 'Leur description sera remplacée par celle-ci. Vide pour l''effacer.'
+        $text = ''
+        $readAs = ((Tr 'La description de ces {0} ordinateurs sera remplacée :') -f $names.Count) + "`n" + (Format-ComputerList $names)
+    }
+    Show-Dialog -Title (Tr 'Modifier la description') -Heading $heading -Names $(if ($names.Count -gt 1) { $names }) -Message $message -MessageName $readAs -Icon 'pencil' -WithTextBox -Text $text -OkText (Tr 'Enregistrer') `
+        -Owner $(if ($Detail) { $Detail.Window }) -State @{ Selected = $Computers; Detail = $Detail } -OnOk {
+        param($state)
+        # An empty description clears it.
+        $description = "$($state.TextBox.Text)".Trim()
+        Start-ComputerWrite 'Description' $state.Selected $description (Tr 'Modifier la description') {
+            param($computer, $result, $value)
+            Set-RowDescription $computer $value
+            "✔ $($computer.ComputerName)"
+        } -Outcome (Tr 'Description modifiée'), (Tr 'Descriptions modifiées') -Detail $state.Detail
+    }
 }
 
 # Déplacer vers…: the OUs of each domain, looked up in the background the first time they're needed and kept for the
@@ -1394,11 +1465,11 @@ function Stop-OuLoad($State) {
     $script:search.Stopping.Add($job)
 }
 
-function Show-MoveDialog($Computers, [string[]]$Skipped) {
+function Show-MoveDialog($Computers, [string[]]$Skipped, [hashtable]$Detail) {
     # Asks where to move the computers (all in one domain), then moves them. $Skipped: those selected that it leaves
-    # alone (Get-ComputerGuard), said under the heading.
+    # alone (Get-ComputerGuard), said under the heading. $Detail: a computer's Propriétés, which it opens over.
     $dialog = [System.Windows.Markup.XamlReader]::Parse((Expand-Icon $script:moveDialogXaml))
-    $dialog.Owner = $script:win
+    $dialog.Owner = if ($Detail) { $Detail.Window } else { $script:win }
     $dialog.Icon = $script:windowIcon
     Set-WindowChrome $dialog
     $currentOUs = @($Computers | ForEach-Object { Get-ParentDN $_.OU } | Select-Object -Unique)
@@ -1446,7 +1517,7 @@ function Show-MoveDialog($Computers, [string[]]$Skipped) {
         Stop-OuLoad $state
         $script:move.Current = $null
     }
-    if ($confirmed -and $state.Target) { Move-Computer $Computers $state.Target }
+    if ($confirmed -and $state.Target) { Move-Computer $Computers $state.Target $Detail }
 }
 
 function Show-OuPicker([string]$Domain, [string]$CurrentDN) {
@@ -1550,8 +1621,9 @@ function Set-RowLocation($Row, [string]$DistinguishedName) {
     Update-RowText $Row
 }
 
-function Move-Computer($Computers, [string]$Target) {
-    # Moves each computer to the OU, in its domain, then updates its row (Emplacement column).
+function Move-Computer($Computers, [string]$Target, [hashtable]$Detail) {
+    # Moves each computer to the OU, in its domain, then updates its row (Emplacement column). $Detail: from its
+    # Propriétés (Start-ComputerWrite).
     $there = @($Computers | Where-Object { (Get-ParentDN $_.OU) -eq $Target } | ForEach-Object { (Tr '✔ {0} (déjà dans cette OU)') -f $_.ComputerName })
     $moving = @($Computers | Where-Object { (Get-ParentDN $_.OU) -ne $Target })
     # « Déplacé » only when one was: all already there, the notice keeps the action's name.
@@ -1560,7 +1632,7 @@ function Move-Computer($Computers, [string]$Target) {
         $from = $computer.ShortPath
         Set-RowLocation $computer "$(($computer.OU -split '(?<!\\),', 2)[0]),$value"
         (Tr '✔ {0} : {1} → {2}') -f $computer.ComputerName, $from, $computer.ShortPath
-    } $there -Outcome $(if ($moving.Count) { (Tr 'Déplacé'), (Tr 'Déplacés') })
+    } $there -Outcome $(if ($moving.Count) { (Tr 'Déplacé'), (Tr 'Déplacés') }) -Detail $Detail
 }
 
 $actions = @{}
@@ -1661,17 +1733,8 @@ $actions.Enable = {
 }
 
 $actions.Disable = {
-    # Only the enabled ones. Reversible, but it cuts the computer off the domain, so Annuler is the default.
-    Start-ComputerGuard (Tr 'Désactiver') 'ban' @(Get-SelectedComputer | Where-Object { $_.IsOn }) {
-        param($selected, $skipped)
-        $names = @($selected | ForEach-Object { $_.ComputerName })
-        $heading = if ($names.Count -eq 1) { (Tr 'Désactiver {0} ?') -f $names[0] } else { (Tr 'Désactiver {0} ordinateurs ?') -f $names.Count }
-        $message = (Tr "Un ordinateur désactivé ne peut plus s'authentifier au domaine : les utilisateurs du domaine ne peuvent plus s'y connecter. On peut le réactiver ensuite (Activer).") + (Get-ComputerGuardNote $skipped)
-        Show-Dialog -Title (Tr 'Désactiver') -Heading $heading -Names $(if ($names.Count -gt 1) { $names }) -Message $message -Icon 'ban' -Tone 'danger' -OkText (Tr 'Désactiver') -CancelIsDefault -State @{ Selected = $selected } -OnOk {
-            param($state)
-            Set-ComputerEnabled $state.Selected $false
-        }
-    }
+    # Only the enabled ones (Request-ComputerDisable).
+    Request-ComputerDisable @(Get-SelectedComputer)
 }
 
 $actions.BitLocker = {
@@ -1690,29 +1753,14 @@ $actions.Laps = {
 $actions.EditDescription = {
     $selected = Get-SelectedComputer
     if (-not $selected.Count) { return }
-    $names = @($selected | ForEach-Object { $_.ComputerName })
-    if ($names.Count -eq 1) {
-        $heading = (Tr 'Description de {0}') -f $names[0]
-        $message = ''
-        $text = $selected[0].Description
-        $readAs = (Tr 'Description de {0} :') -f $names[0]
-    }
-    else {
-        $heading = (Tr 'Description de {0} ordinateurs') -f $names.Count
-        $message = Tr 'Leur description sera remplacée par celle-ci. Vide pour l''effacer.'
-        $text = ''
-        $readAs = ((Tr 'La description de ces {0} ordinateurs sera remplacée :') -f $names.Count) + "`n" + (Format-ComputerList $names)
-    }
-    Show-Dialog -Title (Tr 'Modifier la description') -Heading $heading -Names $(if ($names.Count -gt 1) { $names }) -Message $message -MessageName $readAs -Icon 'pencil' -WithTextBox -Text $text -OkText (Tr 'Enregistrer') -State @{ Selected = $selected } -OnOk {
-        param($state)
-        # An empty description clears it.
-        $description = "$($state.TextBox.Text)".Trim()
-        Start-ComputerWrite 'Description' $state.Selected $description (Tr 'Modifier la description') {
-            param($computer, $result, $value)
-            Set-RowDescription $computer $value
-            "✔ $($computer.ComputerName)"
-        } -Outcome (Tr 'Description modifiée'), (Tr 'Descriptions modifiées')
-    }
+    Show-ComputerDescriptionDialog @($selected)
+}
+
+$actions.Properties = {
+    # Propriétés…: what AD knows of one computer, in a window of its own (ComputerDetails.ps1).
+    $selected = Get-SelectedComputer
+    if ($selected.Count -ne 1) { return }
+    Show-ComputerDetail $selected[0] $win $windowIcon
 }
 
 $actions.Remove = {
@@ -1756,19 +1804,7 @@ $actions.Groups = {
 $actions.GroupsAdd = { Show-SelectionGroupAdd @(ConvertTo-GroupMember (Get-SelectedComputer) 'Computer') }
 $actions.GroupsRemove = { Show-SelectionGroupRemove @(ConvertTo-GroupMember (Get-SelectedComputer) 'Computer') }
 
-$actions.Move = {
-    # One domain at a time: AD only moves a computer within its own domain. Never a domain controller (out of Domain
-    # Controllers, its policy no longer applies) nor the computer Repère runs on.
-    Start-ComputerGuard (Tr 'Déplacer') 'move' (Get-SelectedComputer) {
-        param($selected, $skipped)
-        $domains = @($selected | ForEach-Object { $_.Domain } | Select-Object -Unique)
-        if ($domains.Count -gt 1) {
-            Show-Dialog -Title (Tr 'Déplacer') -Icon 'move' -Tone 'warn' -Message ((Tr 'Les ordinateurs sélectionnés sont dans {0} domaines ({1}). Un ordinateur ne se déplace que dans son domaine : déplacez-les un domaine à la fois.') -f $domains.Count, ($domains -join ', '))
-            return
-        }
-        Show-MoveDialog $selected $skipped
-    }
-}
+$actions.Move = { Request-ComputerMove @(Get-SelectedComputer) }
 
 $actions.NextName = {
     # Prochain nom… (NextName.ps1) on the series of the computer selected: its name, which the window turns into a
@@ -1809,6 +1845,7 @@ $actions.CopyRows = {
     $selectionText.Text = if ($selected.Count -eq 1) { Tr '1 ligne copiée' } else { (Tr '{0} lignes copiées') -f $selected.Count }
 }
 
+$menuProperties.Add_Click($actions.Properties)
 $menuEditDescription.Add_Click($actions.EditDescription)
 $menuMove.Add_Click($actions.Move)
 $menuGroupsItem.Add_Click($actions.Groups)
@@ -1864,7 +1901,8 @@ $actLaps.Add_Click($actions.Laps)
 $actCopy.Add_Click($actions.Copy)
 
 # In the results: Ctrl+C copies the names (rather than the grid's cells) and Ctrl+Maj+C the whole rows, F2 changes the
-# description and Suppr asks to remove the computers, as their buttons do.
+# description, Suppr asks to remove the computers, as their buttons do, and Alt+Entrée opens Propriétés (as in the
+# Explorer).
 $dataGrid.Add_PreviewKeyDown({
     $e = $args[1]
     if (Enter-GridByKey $dataGrid $e) { return }
@@ -1884,6 +1922,11 @@ $dataGrid.Add_PreviewKeyDown({
     }
     elseif ($e.Key -eq 'Delete' -and $modifiers -eq [System.Windows.Input.ModifierKeys]::None) {
         & $script:actions.Remove
+        $e.Handled = $true
+    }
+    # With Alt, WPF says the key as System (only Alt or F10 make one), and which in SystemKey.
+    elseif ($e.Key -eq 'System' -and $e.SystemKey -eq 'Return') {
+        & $script:actions.Properties
         $e.Handled = $true
     }
 })
