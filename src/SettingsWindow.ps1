@@ -495,7 +495,7 @@ function Connect-SccmSetting($Root) {
         $button.IsEnabled = $false
         try {
             Start-BackgroundRead -Command 'Get-SccmCheck' -Arguments @(@{ Site = $site.ToUpperInvariant(); Server = $server }, 'REPERE-TEST-') `
-                -Variables (Get-SccmReadVariable) -Context @{ Site = $site.ToUpperInvariant(); Button = $button } -OnDone {
+                -Variables (Get-SccmReadVariable) -Timeout ($script:ReadTimeout + $script:SccmTimeoutSeconds) -Context @{ Site = $site.ToUpperInvariant(); Button = $button } -OnDone {
                 param($context, $check, $problem)
                 # Even with Paramètres closed meanwhile: it's only hidden, and the next opening can test again.
                 $context.Button.IsEnabled = $true

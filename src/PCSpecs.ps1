@@ -163,14 +163,18 @@ function New-PCSpecsCimSession([string]$Target, [int]$Timeout) {
     # firewall that drops WinRM's port would make WinRM wait for its time limit before DCOM was tried.
     $common = @{ ComputerName = $Target; OperationTimeoutSec = $Timeout; ErrorAction = 'Stop' }
     $wsmanError = Tr 'le port 5985 ne répond pas'
+    $wsmanCause = $null
     if (Test-PCSpecsPort $Target 5985) {
         try { return @{ Session = New-CimSession @common; Protocol = 'WinRM' } }
-        catch { $wsmanError = $_.Exception.Message.Trim() }
+        catch { $wsmanError = $_.Exception.Message.Trim(); $wsmanCause = $_ }
     }
     try { @{ Session = New-CimSession @common -SessionOption (New-CimSessionOption -Protocol Dcom); Protocol = 'DCOM' } }
     catch {
-        # The WinRM error is usually the more meaningful one.
-        throw (Tr 'WinRM : {0} | DCOM : {1}') -f $wsmanError, $_.Exception.Message.Trim()
+        # The WinRM error is usually the more meaningful one. Both errors kept with the message, for their codes
+        # (Get-ErrorKind, Errors.ps1).
+        $failure = [System.Exception]::new(((Tr 'WinRM : {0} | DCOM : {1}') -f $wsmanError, $_.Exception.Message.Trim()), $_.Exception)
+        $failure.Data['Repere.Causes'] = @($wsmanCause, $_)
+        throw $failure
     }
 }
 
@@ -466,7 +470,8 @@ function Get-PCSpec {
             catch {
                 $hint = if (-not $pingOk) { Tr "l'ordinateur semble hors ligne (pas de réponse au ping). " }
                         else { Tr "l'ordinateur répond au ping : vérifiez WinRM, le pare-feu et vos droits d'administrateur. " }
-                throw "$hint$($_.Exception.Message)"
+                # The error kept inside, for its codes.
+                throw [System.Exception]::new("$hint$($_.Exception.Message)", $_.Exception)
             }
         }
         $result.Reachable = $true
@@ -543,6 +548,13 @@ function Get-PCSpec {
                 $biosText = if ($bios.ReleaseDate) { '{0} ({1})' -f $biosVersion, (Format-TextDate $bios.ReleaseDate -Day) } else { $biosVersion }
             }
 
+            # A release this Repère doesn't know yet: said under its build rather than as an alert, as it may well be
+            # supported.
+            $osName = $os.Caption -replace '^Microsoft\s+', ''
+            $buildText = "$($os.Version) (build $($os.BuildNumber))"
+            $release = Get-WindowsRelease ([int]$os.BuildNumber) $osName
+            if ($release -and -not $release.End) { $buildText += "`n$($release.Note)" }
+
             [pscustomobject]@{
                 ComputerName = $cs.Name
                 LoggedOnUser = $user
@@ -553,8 +565,8 @@ function Get-PCSpec {
                 SerialNumber = $serial
                 OSType       = "Windows $($os.OSArchitecture)"
                 SKU          = Get-CleanValue $cs.SystemSKUNumber
-                OSName       = ($os.Caption -replace '^Microsoft\s+', '')
-                BuildNumber  = "$($os.Version) (build $($os.BuildNumber))"
+                OSName       = $osName
+                BuildNumber  = $buildText
                 Manufacturer = Get-CleanValue $cs.Manufacturer
                 Model        = $model
                 # $true for a laptop or a tablet, $false for a desktop or a server, $null when Windows doesn't say.
@@ -973,11 +985,13 @@ function Get-PCSpec {
 }
 
 # Each Windows build's release and end of servicing (Home and Pro, then Enterprise and Education), from
-# learn.microsoft.com/windows/release-health: to update when new versions ship. Used by the alerts and by the results'
-# Système column.
+# learn.microsoft.com/windows/release-health: to update when new versions ship (tools\New-RepereRelease.ps1 warns when
+# the newest's end of support for Pro is less than a year away, a sign that a newer release is missing). Used by the
+# alerts and by the results' Système column. Esu: its support goes on for the computers enrolled in Extended Security
+# Updates, which Repère can't see.
 $script:WindowsReleases = @{
     19044 = @{ Name = 'Windows 10 21H2'; Pro = [datetime]'2023-06-13'; Ent = [datetime]'2024-06-11' }
-    19045 = @{ Name = 'Windows 10 22H2'; Pro = [datetime]'2025-10-14'; Ent = [datetime]'2025-10-14' }
+    19045 = @{ Name = 'Windows 10 22H2'; Pro = [datetime]'2025-10-14'; Ent = [datetime]'2025-10-14'; Esu = $true }
     22000 = @{ Name = 'Windows 11 21H2'; Pro = [datetime]'2023-10-10'; Ent = [datetime]'2024-10-08' }
     22621 = @{ Name = 'Windows 11 22H2'; Pro = [datetime]'2024-10-08'; Ent = [datetime]'2025-10-14' }
     22631 = @{ Name = 'Windows 11 23H2'; Pro = [datetime]'2025-11-11'; Ent = [datetime]'2026-11-10' }
@@ -986,16 +1000,23 @@ $script:WindowsReleases = @{
 }
 
 function Get-WindowsRelease([int]$Build, [string]$OSName) {
-    # A client Windows build's release name (Windows 11 24H2) and end of support for its edition, or $null for a build
-    # the table doesn't know, LTSC and servers (whose support follows other rules). Older Windows 10 builds have all
-    # reached their end.
+    # A client Windows build's release name (Windows 11 24H2), end of support for its edition (End) and a Note for its
+    # alert and the Système column's tooltip, or $null for LTSC and servers (whose support follows other rules) and for
+    # a build between the table's that it doesn't know. Older Windows 10 builds have all reached their end. A build newer
+    # than the table's newest (a release that shipped after this Repère, or an Insider build) is named by its build,
+    # with no End: it isn't said out of support, only that Repère doesn't know when it will be.
     if ($OSName -match 'LTSC|LTSB|Server' -or $Build -le 0) { return $null }
     $release = $script:WindowsReleases[$Build]
     if ($release) {
         $end = if ($OSName -match 'Enterprise|Education|Entreprise|Éducation') { $release.Ent } else { $release.Pro }
-        return [pscustomobject]@{ Name = $release.Name; End = $end }
+        $note = if ($release['Esu']) { Tr 'Un ordinateur inscrit aux mises à jour de sécurité étendues (ESU) reste à jour pour la sécurité.' }
+        return [pscustomobject]@{ Name = $release.Name; End = $end; Note = $note }
     }
-    if ($Build -lt 19044) { return [pscustomobject]@{ Name = "Windows 10 (build $Build)"; End = [datetime]'2025-10-14' } }
+    if ($Build -lt 19044) { return [pscustomobject]@{ Name = "Windows 10 (build $Build)"; End = [datetime]'2025-10-14'; Note = $null } }
+    if ($Build -gt ($script:WindowsReleases.Keys | Measure-Object -Maximum).Maximum) {
+        $major = if ($OSName -match 'Windows (\d+)') { $Matches[1] } else { '11' }
+        return [pscustomobject]@{ Name = "Windows $major (build $Build)"; End = $null; Note = Tr "Repère ne connaît pas encore cette version de Windows : sa fin de support n'est pas connue." }
+    }
 }
 
 function Get-PCSpecAlert($Specs) {
@@ -1015,12 +1036,14 @@ function Get-PCSpecAlert($Specs) {
             elseif ($general.UptimeDays -ge $limits.UptimeWarn) { & $new General LastBoot warn ((Tr 'Pas redémarré depuis {0} jours.') -f $days) }
         }
         $release = Get-WindowsRelease $general.Build $general.OSName
-        if ($release) {
+        # A release Repère doesn't know has no End: no alert, Get-PCSpec says so under its build.
+        if ($release -and $release.End) {
             $label = $release.Name
             $end = $release.End
             $daysLeft = ($end - (Get-Date)).TotalDays
-            if ($daysLeft -lt 0) { & $new General BuildNumber crit ((Tr "{0} n'est plus supporté depuis le {1}.") -f $label, (Format-TextDate $end -Day)) }
-            elseif ($daysLeft -le $limits.EndOfSupportWarnDays) { & $new General BuildNumber warn ((Tr '{0} : fin de support le {1}.') -f $label, (Format-TextDate $end -Day)) }
+            $note = if ($release.Note) { " $($release.Note)" }
+            if ($daysLeft -lt 0) { & $new General BuildNumber crit (((Tr "{0} n'est plus supporté depuis le {1}.") -f $label, (Format-TextDate $end -Day)) + $note) }
+            elseif ($daysLeft -le $limits.EndOfSupportWarnDays) { & $new General BuildNumber warn (((Tr '{0} : fin de support le {1}.') -f $label, (Format-TextDate $end -Day)) + $note) }
         }
     }
 

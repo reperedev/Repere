@@ -65,18 +65,26 @@ function Get-SelectionDnFilter($Members) {
 }
 
 # How AD says a change of a group's members can't be made: that this account may not change the group (for every
-# member at once), that a member is already in it, or isn't (as wanted, then). Its error codes too, its text being in
-# Windows' language.
+# member at once: 8344, insufficient rights, or 5, access denied), that a member is already in it, or isn't (as wanted,
+# then). By their Win32 error codes, their text being in Windows' language; the text, in English or French, only for
+# an error without a code.
 # Their French in a French Windows, its accents matched by any letter: these patterns aren't shown.
-$script:GroupDenied = 'Insufficient access rights|Access is denied|Acc.s refus.|0x80070005|droits d.acc.s insuffisants'
+$script:GroupDenied = @{ Pattern = 'Insufficient access rights|Access is denied|Acc.s refus.|0x80070005|droits d.acc.s insuffisants'; Code = 8344, 5 }
 $script:GroupAlreadyIn = @{ Pattern = 'already a member|d.j. membre'; Code = 1378 }
 $script:GroupNotIn = @{ Pattern = 'is not a member|n.est pas membre'; Code = 1377 }
 
 function Test-GroupRefusal($Exception, $Refusal) {
-    # Whether AD's refusal is this one (a pattern of its text, an error code).
-    if ("$($Exception.Message)" -match $Refusal.Pattern) { return $true }
-    $code = $Exception.PSObject.Properties['ErrorCode']
-    [bool]($code -and $code.Value -eq $Refusal.Code)
+    # Whether AD's refusal is this one: one of its Win32 codes, as ADException's ErrorCode, Win32Exception's
+    # NativeErrorCode, or an HRESULT 0x8007xxxx (an UnauthorizedAccessException's is 0x80070005). Its text otherwise,
+    # for an error that has none of these.
+    $codes = @(foreach ($name in 'ErrorCode', 'NativeErrorCode') {
+        $property = $Exception.PSObject.Properties[$name]
+        if ($property -and ($property.Value -is [int] -or $property.Value -is [uint32])) { [int64]$property.Value }
+    })
+    $hresult = [int64]$Exception.HResult -band 0xFFFFFFFFL
+    if (($hresult -band 0xFFFF0000L) -eq 0x80070000L) { $codes += $hresult -band 0xFFFF }
+    if (@($codes | Where-Object { $_ -in $Refusal.Code }).Count) { return $true }
+    "$($Exception.Message)" -match $Refusal.Pattern
 }
 
 # The DC each domain's reads and changes go to (Get-GroupServerMap), and those found not answering
@@ -135,7 +143,7 @@ function Invoke-GroupMemberBatch($Pending, [scriptblock]$Change, [string]$Done, 
     }
     catch {
         $why = $_.Exception.Message
-        if ($Pending.Count -eq 1 -or $why -match $script:GroupDenied) {
+        if ($Pending.Count -eq 1 -or (Test-GroupRefusal $_.Exception $script:GroupDenied)) {
             if ($Pending.Count -eq 1 -and $Settled -and (Test-GroupRefusal $_.Exception $Settled)) { return $Done -f $Pending[0].Member.Label, $GroupName }
             foreach ($item in $Pending) { $Failed -f $item.Member.Label, $GroupName, $why }
             return
@@ -316,11 +324,19 @@ function Start-SelectionGroupChange([string]$Command, [object[]]$Arguments, $Mem
     # The change in the background, many objects being many AD calls, then the report. On each domain's DC chosen here
     # (Get-GroupServerMap): the groups' ($Arguments' first, each with its DistinguishedName) and the members'.
     $domains = @(@($Arguments[0]) | ForEach-Object { Get-DomainOfDN ([string]$_.DistinguishedName) }) + @($Members | ForEach-Object { $_.Domain })
-    Start-WindowRead -Kind "$Command $([guid]::NewGuid())" -Command 'Invoke-SelectionGroupChange' -Arguments @($Command, $Arguments) `
+    # The report comes whole at the end: a DC that doesn't answer within the changes' time limit (Get-WriteTimeout, a
+    # call per group then per member at worst) leaves every member's change unsure, which their lines say.
+    $timeout = Get-WriteTimeout (@($Arguments[0]).Count * [Math]::Max(1, @($Members).Count))
+    Start-WindowRead -Kind "$Command $([guid]::NewGuid())" -Command 'Invoke-SelectionGroupChange' -Arguments @($Command, $Arguments) -Timeout $timeout `
         -Functions $Command, 'Get-GroupMemberObject', 'Read-SelectionMemberOf', 'Read-SelectionAccount', 'Get-SelectionDnFilter', 'Invoke-GroupMemberBatch', 'Test-GroupRefusal', 'Get-DomainOfDN', 'Get-LdapText', 'Invoke-OnGroupServer', 'Test-ServerDown', 'Get-DomainFallback' `
         -Variables @{ GroupDenied = $script:GroupDenied; GroupAlreadyIn = $script:GroupAlreadyIn; GroupNotIn = $script:GroupNotIn; GroupServers = Get-GroupServerMap $domains; GroupServersDown = @{} } `
-        -Context @{ Members = $Members; Title = $Title; GroupNames = $GroupNames; Remove = [bool]$Remove } -OnDone {
-        param($context, $read, $problem)
+        -Context @{ Members = $Members; Title = $Title; GroupNames = $GroupNames; Remove = [bool]$Remove; Timeout = $timeout } -OnDone {
+        param($context, $read, $problem, $timedOut)
+        if ($timedOut) {
+            Show-ActionReport @($context.Members | ForEach-Object { (Tr '⚠ {0} : {1}') -f $_.Label, (Get-WriteUnsureText $context.Timeout) }) $context.Title
+            if ($context.Members[0].Kind -eq 'User') { Update-OpenUserDetail @($context.Members | ForEach-Object { $_.Row }) }
+            return
+        }
         if ($problem -or -not $read) {
             $why = if ($problem) { $problem } else { Tr 'AD n''a rien renvoyé' }
             Show-ActionReport @($context.Members | ForEach-Object { (Tr '✖ {0} : {1}') -f $_.Label, $why }) $context.Title

@@ -174,7 +174,7 @@ function Get-LapsEntryList($Computers) {
 function Show-LapsDialog($Computers, $Owner, $Icon) {
     # Reads every computer's password in the background (nothing is written to AD), then the window.
     Start-WindowRead -Kind 'Laps' -Command 'Get-LapsEntryList' -Arguments @(, @(ConvertTo-ReadComputer $Computers)) `
-        -Functions 'Get-LapsEntry', 'Get-LapsPassword', 'Format-LapsDate' -Variables @{ hasLapsCommand = $hasLapsCommand } `
+        -Functions 'Get-LapsEntry', 'Get-LapsPassword', 'Format-LapsDate' -Variables @{ hasLapsCommand = $hasLapsCommand } -Timeout (Get-ReadTimeout @($Computers).Count) `
         -Context @{ Computers = $Computers; Owner = $Owner; Icon = $Icon } -OnDone {
         param($context, $read, $problem)
         if ($problem -or -not $read) {

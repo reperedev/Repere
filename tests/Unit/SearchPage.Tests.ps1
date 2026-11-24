@@ -100,7 +100,7 @@ Describe 'Tout afficher after a search cancelled before any domain answered (#23
         $script:searchPool = [runspacefactory]::CreateRunspacePool(1, 2)
         $script:searchPool.Open()
         # Each domain takes long enough to be stopped first.
-        $page = New-TestPage 'param($Domain, $LdapFilter, $RowBuilder, $Limit, $LockedOnly, $Today) Start-Sleep -Seconds 30'
+        $page = New-TestPage 'param($Domain, $LdapFilter, $RowBuilder, $Limit, $LockedOnly, $Today, $Clock) Start-Sleep -Seconds 30'
         $shown = $page.LastRequest
         Start-WiderSearch $page
         @($page.Search.Jobs).Count | Should -Be 2
@@ -233,7 +233,7 @@ Describe 'A search asked for while another runs (#237)' {
     }
 
     It 'Replaces it, from Entrée or Rechercher, and is the recent search first' {
-        $page = New-TestPage 'param($Domain, $LdapFilter, $RowBuilder, $Limit, $LockedOnly, $Today) Start-Sleep -Seconds 30'
+        $page = New-TestPage 'param($Domain, $LdapFilter, $RowBuilder, $Limit, $LockedOnly, $Today, $Clock) Start-Sleep -Seconds 30'
         Start-WiderSearch $page
         $running = @($page.Search.Jobs)
         $page.Root.FindName('user_domain').SelectedItem = 'demo.local'
@@ -251,7 +251,7 @@ Describe 'A search asked for while another runs (#237)' {
     }
 
     It 'Replaces it with a recent search' {
-        $page = New-TestPage 'param($Domain, $LdapFilter, $RowBuilder, $Limit, $LockedOnly, $Today) Start-Sleep -Seconds 30'
+        $page = New-TestPage 'param($Domain, $LdapFilter, $RowBuilder, $Limit, $LockedOnly, $Today, $Clock) Start-Sleep -Seconds 30'
         Start-WiderSearch $page
         $type = $script:UserPage.Types[(Tr 'Nom, identifiant ou courriel')].Id
         Use-PageRecent $page @{ Domain = 'demo.local'; Type = $type; Text = 'bert' }
@@ -264,7 +264,7 @@ Describe 'A search asked for while another runs (#237)' {
 
     It 'Disposes of the jobs it stopped on its own timer, which then stops' {
         # Stopped, the jobs end a moment later, as a query does once its DC lets go: they're waited for, then a tick.
-        $page = New-TestPage 'param($Domain, $LdapFilter, $RowBuilder, $Limit, $LockedOnly, $Today) Start-Sleep -Seconds 30'
+        $page = New-TestPage 'param($Domain, $LdapFilter, $RowBuilder, $Limit, $LockedOnly, $Today, $Clock) Start-Sleep -Seconds 30'
         Start-WiderSearch $page
         Stop-PageSearch $page
         $stopped = @($script:search.Stopping)

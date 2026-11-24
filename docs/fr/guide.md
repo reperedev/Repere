@@ -24,7 +24,7 @@ La fenêtre a trois pages, **Ordinateurs**, **Utilisateurs** et **Groupes**, et 
 2. le **type de recherche** (par nom, par description…) ;
 3. le **champ de recherche**, puis Entrée ou **Rechercher**.
 
-Les résultats s'affichent dans une grille. Chaque colonne se trie d'un clic et se filtre (**Filtres**) ; **Colonnes** choisit celles qui s'affichent, et **Exporter** enregistre les résultats affichés en CSV. La flèche ↓ dans le champ de recherche rappelle les **recherches récentes**.
+Les résultats s'affichent dans une grille. Chaque colonne se trie d'un clic et se filtre (**Filtres**) ; **Colonnes** choisit celles qui s'affichent, et **Exporter** enregistre les résultats affichés en CSV : les colonnes affichées, dans leur ordre, avec les dates en entier et le nom distinctif de chaque ligne en dernier. La flèche ↓ dans le champ de recherche rappelle les **recherches récentes**.
 
 Une recherche qui ne trouve rien dit où elle a cherché et propose la suite, comme **Chercher dans tous les domaines**. Ce qui se passe en arrière-plan (une action finie, un ordinateur injoignable) s'affiche dans une notification, en bas de la fenêtre.
 
@@ -56,7 +56,7 @@ Sélectionnez un ou plusieurs ordinateurs, puis faites un clic droit (ou utilise
 - **Outils à distance** : Bureau à distance, prendre la main, utilisateurs connectés, caractéristiques, et les consoles habituelles (gestion de l'ordinateur, C$, PowerShell à distance, services, observateur d'événements, forcer les stratégies).
 - **Redémarrage** : redémarrer avec un message à la personne, ou annuler un redémarrage prévu.
 
-Le sous-menu **Copier** copie le nom, les noms sur une ligne (séparés par des virgules) ou les lignes entières.
+Le sous-menu **Copier** copie le nom, les noms sur une ligne (séparés par des virgules) ou les lignes, avec les colonnes qu'enregistre Exporter.
 
 ![Le clic droit, avec les outils à distance](images/menu.png)
 

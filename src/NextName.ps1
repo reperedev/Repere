@@ -316,13 +316,20 @@ function Get-SccmCheck($Sccm, [string]$Start) {
         $failure = if ($_.Exception.InnerException) { $_.Exception.InnerException } else { $_.Exception }
         $message = if ($failure -is [System.Management.Automation.ActionPreferenceStopException] -and $failure.ErrorRecord) { $failure.ErrorRecord.Exception.Message } else { $failure.Message }
         $message = "$message".Trim() -replace '^(?:The running command stopped because|La commande en cours d.ex.cution s.est arr.t.e)[^:]*:\s*'
+        # A site not found, or a server that doesn't answer: by the error's codes (Get-ErrorKind), whatever Windows'
+        # language, then by its text in English or French. The module not found is Repère's own text
+        # ($SccmReadScript), the same in every language. The console's version has no code of its own Repère knows:
+        # its text only.
+        $kinds = @(Get-ErrorKind $_)
         $reason = if ($message -match 'ConfigurationManager module not found') { Tr 'la console Configuration Manager n''est pas installée sur cet ordinateur' }
         # The site was upgraded, not this console: its cmdlets could harm the site, so SCCM stays not checked.
         elseif ($message -match '(?:A new version of the console is available|nouvelle version de la console est disponible)\s*\((?<version>[\d.]+)\)') {
             (Tr 'la console Configuration Manager doit être mise à jour (version {0})') -f $Matches.version
         }
-        elseif ($message -match 'namespace|espace de noms') { (Tr 'le site {0} est introuvable sur {1}') -f $Sccm.Site, $Sccm.Server }
-        elseif ($message -match 'RPC') { (Tr '{0} ne répond pas') -f $Sccm.Server }
+        elseif ($kinds -contains 'InvalidNamespace') { (Tr 'le site {0} est introuvable sur {1}') -f $Sccm.Site, $Sccm.Server }
+        elseif ($kinds -contains 'RpcUnavailable') { (Tr '{0} ne répond pas') -f $Sccm.Server }
+        elseif (-not $kinds.Count -and $message -match 'namespace|espace de noms') { (Tr 'le site {0} est introuvable sur {1}') -f $Sccm.Site, $Sccm.Server }
+        elseif (-not $kinds.Count -and $message -match 'RPC') { (Tr '{0} ne répond pas') -f $Sccm.Server }
         else {
             # Any other: its first sentence, without its period (the line that shows it adds its own).
             $first = @((ConvertTo-FrenchError $message) -split '\r?\n')[0].Trim()
@@ -756,14 +763,15 @@ function Stop-NextNameRead($State) {
 }
 
 function Start-NextNameRead {
-    # The read Update-NextNameRead asked for. A later change makes its answer useless: ReadId says so.
+    # The read Update-NextNameRead asked for. A later change makes its answer useless: ReadId says so. Its time limit is
+    # the reads' and SCCM's own (SccmTimeoutSeconds), which it may wait for after the domains.
     $state = $script:NextNameDialog
     $state.Timer.Stop()
     if (-not $state -or $state.Closed) { return }
     $wanted = $state.Wanted
     Stop-NextNameRead $state
     Start-BackgroundRead -Command 'Get-NextNameRead' -Arguments @($wanted.Start, $wanted.Domains, $wanted.Sccm) `
-        -Functions 'Get-SccmCheck' -Variables (Get-SccmReadVariable) `
+        -Functions 'Get-SccmCheck', 'Get-ErrorKind' -Variables (Get-SccmReadVariable) -Timeout ($script:ReadTimeout + $script:SccmTimeoutSeconds) `
         -Context @{ State = $state; Id = $state.ReadId; Wanted = $wanted } -OnDone {
         param($context, $read, $problem)
         $state = $context.State

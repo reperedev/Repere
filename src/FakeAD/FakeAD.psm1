@@ -28,6 +28,34 @@
 # Caractéristiques window use to reach them (Test-Connection, Resolve-DnsName and the CIM commands), and the scheduled
 # tasks that Forcer les stratégies and PowerShell à distance create there.
 
+# The errors are thrown as Windows throws them, with their types and codes: Repère knows them by those (Get-ErrorKind,
+# Test-GroupRefusal, Test-ServerDown), not by their text, which is in Windows' language. ADException and
+# ADServerDownException stand in for the ActiveDirectory module's, by their names and ErrorCode (a Win32 code).
+class ADException : System.InvalidOperationException {
+    [int]$ErrorCode
+    ADException([string]$Message, [int]$ErrorCode) : base($Message) { $this.ErrorCode = $ErrorCode }
+}
+
+class ADServerDownException : System.Exception {
+    ADServerDownException([string]$Message) : base($Message) { }
+}
+
+function New-FakeCimError([string]$Message, [int64]$Code) {
+    # A CimException as CIM gives one: its message, and its code (an HRESULT) in its error data, as error_Code and
+    # MessageId.
+    $data = CimCmdlets\New-CimInstance -ClassName MSFT_WmiError -Namespace root/cimv2 -ClientOnly -Property @{
+        error_Code = [uint32]$Code; Message = $Message; MessageID = 'HRESULT 0x{0:x8}' -f $Code; CIMStatusCode = [uint32]1
+    }
+    [Microsoft.Management.Infrastructure.CimException]::new($data)
+}
+
+function New-FakeRemotingError([string]$Message, [int]$Code) {
+    # PowerShell's remoting error, with WinRM's code (5: access denied).
+    $failure = [System.Management.Automation.Remoting.PSRemotingTransportException]::new($Message)
+    $failure.ErrorCode = $Code
+    $failure
+}
+
 # One forest with two domains: demo.local and its child nord.demo.local. Like the real AD, a command without
 # -Server goes to the user's domain (demo.local), and a search of demo.local doesn't return nord's objects. Across
 # domains, a group's membership is known in the group's domain only (its member list), and for a universal group in
@@ -568,7 +596,7 @@ function Resolve-FakeADDomain([string]$Server) {
     $down = $unreachable -contains $Server
     if ($Server -match '^dc[1-3]\.' -and $script:Domains.Contains($Server.Substring(4))) { $Server = $Server.Substring(4) }
     if ($down -or -not $script:Domains.Contains($Server) -or $unreachable -contains $Server) {
-        throw 'Unable to contact the server. This may be because this server does not exist, it is currently down, or it does not have the Active Directory Web Services running.'
+        throw [ADServerDownException]::new('Unable to contact the server. This may be because this server does not exist, it is currently down, or it does not have the Active Directory Web Services running.')
     }
     foreach ($pair in "$env:REPERE_FAKEAD_SLOW" -split ';') {
         $domain, $milliseconds = $pair -split '=', 2
@@ -634,11 +662,11 @@ function Get-FakeADChildObject([string]$ParentDN) {
 
 function Remove-FakeADComputer([string]$Identity, [string]$DomainDN, [switch]$Recursive) {
     $computer = Find-FakeADComputer $Identity $DomainDN
-    if ($computer.ProtectedFromAccidentalDeletion) { throw 'Access is denied' }
-    if ($computer.PSObject.Properties['DenyWrite'] -and $computer.DenyWrite) { throw 'Insufficient access rights to perform the operation' }
+    if ($computer.ProtectedFromAccidentalDeletion) { throw [System.UnauthorizedAccessException]::new('Access is denied') }
+    if ($computer.PSObject.Properties['DenyWrite'] -and $computer.DenyWrite) { throw [ADException]::new('Insufficient access rights to perform the operation', 8344) }
     $children = @(Get-FakeADChildObject $Identity)
     if ($children.Count -and -not $Recursive) {
-        throw 'The directory service can perform the requested operation only on a leaf object'
+        throw [ADException]::new('The directory service can perform the requested operation only on a leaf object', 8213)
     }
     $script:Store.ChildObjects = @($script:Store.ChildObjects | Where-Object { $children -notcontains $_ })
     # Replaced, not changed in place: a search may be reading the current list from another runspace.
@@ -711,7 +739,7 @@ function Get-ADUser {
     $domainDN = Resolve-FakeADDomain $Server
     if ($Identity) {
         $user = Find-FakeADUser $Identity $domainDN
-        if ($Properties -contains 'tokenGroups' -and $user.DenyTokenGroups) { throw 'Insufficient access rights to perform the operation' }
+        if ($Properties -contains 'tokenGroups' -and $user.DenyTokenGroups) { throw [ADException]::new('Insufficient access rights to perform the operation', 8344) }
         $copy = Add-FakeADMembership ($user | Select-Object *) $domainDN 513
         # tokenGroups only when asked for, like the real cmdlet's constructed attributes.
         if ($Properties -notcontains 'tokenGroups') { $copy.PSObject.Properties.Remove('tokenGroups') }
@@ -732,7 +760,7 @@ function Unlock-ADAccount {
 
     Write-FakeADLog @{ Command = 'Unlock-ADAccount'; Identity = $Identity; Server = $Server }
     $user = Find-FakeADUser $Identity (Resolve-FakeADDomain $Server)
-    if ($user.DenyWrite) { throw 'Access is denied' }
+    if ($user.DenyWrite) { throw [System.UnauthorizedAccessException]::new('Access is denied') }
     $user.LockedOut = $false
     $user.lockoutTime = 0
 }
@@ -751,7 +779,7 @@ function Set-ADAccountPassword {
     $length = if ($NewPassword) { $NewPassword.Length } else { 0 }
     Write-FakeADLog @{ Command = 'Set-ADAccountPassword'; Identity = $Identity; Reset = [bool]$Reset; Length = $length; Server = $Server }
     $user = Find-FakeADUser $Identity (Resolve-FakeADDomain $Server)
-    if ($user.DenyWrite) { throw 'Access is denied' }
+    if ($user.DenyWrite) { throw [System.UnauthorizedAccessException]::new('Access is denied') }
     if ($length -lt 10) { throw 'The password does not meet the length, complexity, or history requirement of the domain.' }
     $user.PasswordLastSet = Get-Date
     $user.PasswordExpired = $false
@@ -786,13 +814,13 @@ function Set-ADUser {
     Write-FakeADLog @{ Command = 'Set-ADUser'; Identity = $Identity; ChangePasswordAtLogon = $ChangePasswordAtLogon; Server = $Server
                        Replace = $(if ($Replace) { @($Replace.Keys | Sort-Object | ForEach-Object { "$_=$($Replace[$_])" }) -join ';' }); Clear = $Clear -join ',' }
     $user = Find-FakeADUser $Identity (Resolve-FakeADDomain $Server)
-    if ($user.DenyWrite) { throw 'Access is denied' }
+    if ($user.DenyWrite) { throw [System.UnauthorizedAccessException]::new('Access is denied') }
     $denied = @($user.PSObject.Properties['DenyAttributes'] | ForEach-Object { $_.Value })
     $writes = @(@($Replace.Keys) + @($Clear) | Where-Object { $_ })
     foreach ($name in $writes) {
         $attribute = $script:FakeUserAttributes[$name.ToLowerInvariant()]
         if (-not $attribute) { throw "The specified directory service attribute or value does not exist: $name" }
-        if ($denied -contains $name) { throw 'Insufficient access rights to perform the operation' }
+        if ($denied -contains $name) { throw [ADException]::new('Insufficient access rights to perform the operation', 8344) }
         if ($Replace -and $Replace.ContainsKey($name)) {
             $value = [string]$Replace[$name]
             if ($attribute[1] -and $value.Length -gt $attribute[1]) { throw 'A value for the attribute was not in the acceptable range of values' }
@@ -1047,7 +1075,7 @@ function Set-ADComputer {
 
     Write-FakeADLog @{ Command = 'Set-ADComputer'; Identity = $Identity; Description = $Description; Location = $Location; ManagedBy = $ManagedBy; Clear = $Clear -join ','; Server = $Server }
     $computer = Find-FakeADComputer $Identity (Resolve-FakeADDomain $Server)
-    if ($computer.DenyWrite) { throw 'Insufficient access rights to perform the operation' }
+    if ($computer.DenyWrite) { throw [ADException]::new('Insufficient access rights to perform the operation', 8344) }
     if ($Clear -contains 'Description') { $computer.Description = $null }
     elseif ($PSBoundParameters.ContainsKey('Description')) { $computer.Description = $Description }
     if ($Clear -contains 'location') { $computer.Location = $null }
@@ -1069,7 +1097,7 @@ function Set-ADObject {
 
     Write-FakeADLog @{ Command = 'Set-ADObject'; Identity = $Identity; ProtectedFromAccidentalDeletion = $ProtectedFromAccidentalDeletion; Server = $Server }
     $computer = Find-FakeADComputer $Identity (Resolve-FakeADDomain $Server)
-    if ($computer.DenyWrite) { throw 'Insufficient access rights to perform the operation' }
+    if ($computer.DenyWrite) { throw [ADException]::new('Insufficient access rights to perform the operation', 8344) }
     $computer.ProtectedFromAccidentalDeletion = $ProtectedFromAccidentalDeletion
 }
 
@@ -1083,7 +1111,7 @@ function Enable-ADAccount {
 
     Write-FakeADLog @{ Command = 'Enable-ADAccount'; Identity = $Identity; Server = $Server }
     $account = Find-FakeADAccount $Identity (Resolve-FakeADDomain $Server)
-    if ($account.DenyWrite) { throw 'Insufficient access rights to perform the operation' }
+    if ($account.DenyWrite) { throw [ADException]::new('Insufficient access rights to perform the operation', 8344) }
     $account.Enabled = $true
 }
 
@@ -1103,7 +1131,7 @@ function Disable-ADAccount {
 
     Write-FakeADLog @{ Command = 'Disable-ADAccount'; Identity = $Identity; Server = $Server }
     $account = Find-FakeADAccount $Identity (Resolve-FakeADDomain $Server)
-    if ($account.DenyWrite) { throw 'Insufficient access rights to perform the operation' }
+    if ($account.DenyWrite) { throw [ADException]::new('Insufficient access rights to perform the operation', 8344) }
     $account.Enabled = $false
 }
 
@@ -1135,7 +1163,7 @@ function Remove-ADObject {
     # An object held by a computer (BitLocker recovery information), or a computer.
     $child = $script:Store.ChildObjects | Where-Object { $_.DistinguishedName -eq $Identity -and (Test-FakeADInDomain $_.DistinguishedName $domainDN) }
     if ($child) {
-        if ($child.DenyDelete) { throw 'Access is denied' }
+        if ($child.DenyDelete) { throw [System.UnauthorizedAccessException]::new('Access is denied') }
         $script:Store.ChildObjects = @($script:Store.ChildObjects | Where-Object { $_ -ne $child })
     }
     elseif ($script:Store.ChildObjects | Where-Object DistinguishedName -eq $Identity) {
@@ -1205,8 +1233,8 @@ function Move-ADObject {
     Write-FakeADLog @{ Command = 'Move-ADObject'; Identity = $Identity; TargetPath = $TargetPath; Server = $Server }
     $domainDN = Resolve-FakeADDomain $Server
     $computer = Find-FakeADComputer $Identity $domainDN
-    if ($computer.ProtectedFromAccidentalDeletion) { throw 'Access is denied' }
-    if ($computer.DenyWrite) { throw 'Insufficient access rights to perform the operation' }
+    if ($computer.ProtectedFromAccidentalDeletion) { throw [System.UnauthorizedAccessException]::new('Access is denied') }
+    if ($computer.DenyWrite) { throw [ADException]::new('Insufficient access rights to perform the operation', 8344) }
     $targets = @(@(Get-FakeADOrganizationalUnitList | Where-Object { Test-FakeADInDomain $_.DistinguishedName $domainDN }).DistinguishedName) + "CN=Computers,$domainDN"
     if ($targets -notcontains $TargetPath) { throw "Directory object not found: '$TargetPath'" }
     if (-not $PSCmdlet.ShouldProcess($Identity)) { return }
@@ -1523,8 +1551,8 @@ function New-CimSession {
     )
 
     if (-not $ComputerName -or -not (Get-FakeCimData $ComputerName)) {
-        if ($SessionOption -and $SessionOption.Protocol -eq 'Dcom') { throw 'The RPC server is unavailable.' }
-        throw "WinRM cannot complete the operation. Verify that the specified computer name is valid, that the computer is accessible over the network, and that a firewall exception for the WinRM service is enabled and allows access from this computer."
+        if ($SessionOption -and $SessionOption.Protocol -eq 'Dcom') { throw (New-FakeCimError 'The RPC server is unavailable.' 0x800706BAL) }
+        throw (New-FakeCimError "WinRM cannot complete the operation. Verify that the specified computer name is valid, that the computer is accessible over the network, and that a firewall exception for the WinRM service is enabled and allows access from this computer." 0x80338126L)
     }
     $protocol = if ($SessionOption -and $SessionOption.Protocol -eq 'Dcom') { 'Dcom' } else { 'WSMan' }
     [pscustomobject]@{ FakeHost = $ComputerName; Data = Get-FakeCimData $ComputerName; Protocol = $protocol }
@@ -1560,8 +1588,8 @@ function Invoke-Command {
 
     $data = if ($ComputerName) { Get-FakeCimData $ComputerName[0] }
     if (-not $data) { return Microsoft.PowerShell.Core\Invoke-Command @PSBoundParameters }
-    if ($env:REPERE_FAKEAD_NO_REMOTING) { throw "Connecting to remote server $($ComputerName[0]) failed with the following error message : Access is denied." }
-    if (-not $script:Store.WinRM[$ComputerName[0]]) { throw "Connecting to remote server $($ComputerName[0]) failed with the following error message : WinRM cannot complete the operation." }
+    if ($env:REPERE_FAKEAD_NO_REMOTING) { throw (New-FakeRemotingError "Connecting to remote server $($ComputerName[0]) failed with the following error message : Access is denied." 5) }
+    if (-not $script:Store.WinRM[$ComputerName[0]]) { throw (New-FakeRemotingError "Connecting to remote server $($ComputerName[0]) failed with the following error message : WinRM cannot complete the operation." 53) }
     $registry = $data['Registry']
     if ($registry -is [string]) { throw $registry }
     foreach ($path in $registry.Keys) {
@@ -1957,10 +1985,10 @@ function Add-ADGroupMember {
     $domainDN = Resolve-FakeADDomain $Server
     Write-FakeADLog @{ Command = 'Add-ADGroupMember'; Identity = $Identity; Members = @($Members | ForEach-Object { if ($_ -is [string]) { $_ } else { $_.DistinguishedName } }) -join ';'; Server = $Server }
     $group = Find-FakeADGroup $Identity $domainDN
-    if ($group.DenyWrite) { throw 'Insufficient access rights to perform the operation' }
+    if ($group.DenyWrite) { throw [ADException]::new('Insufficient access rights to perform the operation', 8344) }
     $dns = @(foreach ($member in $Members) { Get-FakeADMemberDN $member $domainDN })
     foreach ($dn in $dns) {
-        if ($group.Members -contains $dn) { throw "The specified account name is already a member of the group" }
+        if ($group.Members -contains $dn) { throw [ADException]::new('The specified account name is already a member of the group', 1378) }
         if ($group.GroupScope -eq 'Global' -and -not (Test-FakeADInDomain $dn $domainDN)) { throw 'A global group cannot have a cross-domain member.' }
     }
     $group.Members = @($group.Members) + $dns
@@ -1980,7 +2008,7 @@ function Remove-ADGroupMember {
     Write-FakeADLog @{ Command = 'Remove-ADGroupMember'; Identity = $Identity; Members = @($Members | ForEach-Object { if ($_ -is [string]) { $_ } else { $_.DistinguishedName } }) -join ';'; Server = $Server }
     $group = Find-FakeADGroup $Identity $domainDN
     if (-not $PSCmdlet.ShouldProcess($Identity)) { return }
-    if ($group.DenyWrite) { throw 'Insufficient access rights to perform the operation' }
+    if ($group.DenyWrite) { throw [ADException]::new('Insufficient access rights to perform the operation', 8344) }
     $dns = @(foreach ($member in $Members) { Get-FakeADMemberDN $member $domainDN })
     $group.Members = @($group.Members | Where-Object { $dns -notcontains $_ })
 }
@@ -2007,7 +2035,7 @@ function Set-ADAccountExpiration {
 
     Write-FakeADLog @{ Command = 'Set-ADAccountExpiration'; Identity = $Identity; DateTime = $DateTime.ToString('yyyy-MM-dd HH:mm'); Server = $Server }
     $user = Find-FakeADUser $Identity (Resolve-FakeADDomain $Server)
-    if ($user.DenyWrite) { throw 'Access is denied' }
+    if ($user.DenyWrite) { throw [System.UnauthorizedAccessException]::new('Access is denied') }
     $user.AccountExpirationDate = $DateTime
 }
 
@@ -2021,7 +2049,7 @@ function Clear-ADAccountExpiration {
 
     Write-FakeADLog @{ Command = 'Clear-ADAccountExpiration'; Identity = $Identity; Server = $Server }
     $user = Find-FakeADUser $Identity (Resolve-FakeADDomain $Server)
-    if ($user.DenyWrite) { throw 'Access is denied' }
+    if ($user.DenyWrite) { throw [System.UnauthorizedAccessException]::new('Access is denied') }
     $user.AccountExpirationDate = $null
 }
 

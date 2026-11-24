@@ -330,7 +330,7 @@ function Update-GroupMemberSearch($State) {
     if ($text -eq $State.MemberFilter -and $State.Detail.Members.Filter -eq $text) { return }
     $State.MemberFilter = $text
     Set-DetailReading $State $true
-    Start-BackgroundRead -Command 'Read-GroupMember' -Arguments @($State.Row, $State.Detail.Group, $text, (Get-UserServer $State.Row.Domain)) -Functions (Get-GroupReadFunction) `
+    Start-UserServerRead -Command 'Read-GroupMember' -Arguments @($State.Row, $State.Detail.Group, $text, $null) -Domain $State.Row.Domain -At 3 -Functions (Get-GroupReadFunction) `
         -Variables (Get-DetailReadVariable) -Context @{ State = $State; Text = $text } -OnDone {
         param($context, $members, $problem)
         $state = $context.State
@@ -349,9 +349,9 @@ function Get-GroupReadFunction {
 }
 
 function Get-GroupDetailRead($State) {
-    # What Start-DetailRead runs for a group: read where its changes go (Get-UserServer), chosen on this thread, which
-    # keeps that choice.
-    @{ Command = 'Read-GroupDetail'; Arguments = @($State.Row, $State.MemberFilter, (Get-UserServer $State.Row.Domain)); Functions = Get-GroupReadFunction }
+    # What Start-DetailRead runs for a group: read where its changes go (Get-UserServer, argument 2), looked up on the
+    # read's runspace when it isn't known yet (Start-UserServerRead), which gives that choice back to this thread.
+    @{ Command = 'Read-GroupDetail'; Arguments = @($State.Row, $State.MemberFilter, $null); Domain = $State.Row.Domain; At = 2; Functions = Get-GroupReadFunction }
 }
 
 function Show-GroupMemberList($State) {
@@ -384,10 +384,12 @@ function Show-GroupMemberAddDialog($State) {
     $row = $State.Row
     Show-GroupMemberPicker $row $State.Window (Get-GroupListedMember $State) $State {
         param($state, $result)
-        Update-GroupDetail $state
+        # Added in the background (Start-GroupMemberWrite): closed meanwhile, what failed is said over the main window.
+        $open = -not $state['Closed']
+        if ($open) { Update-GroupDetail $state }
         $text = Get-GroupMemberAddText $state.Row $result
-        if ($text) { Show-DetailNotice $state $text }
-        if ($result.Failed) { Show-Dialog -Title (Tr 'Ajouter des membres') -Message ($result.Failed -join "`n") -Owner $state.Window }
+        if ($text -and $open) { Show-DetailNotice $state $text }
+        if ($result.Failed) { Show-Dialog -Title (Tr 'Ajouter des membres') -Message ($result.Failed -join "`n") -Owner (Get-DetailOwner $state) }
     }
 }
 
@@ -479,24 +481,74 @@ function Show-GroupMemberPicker($Row, $Owner, [string[]]$Listed, $Context, [scri
         $who = if ($dialog.Members.Count -eq 1) { [string]$dialog.Members[0].Name } else { (Tr '{0} comptes') -f $dialog.Members.Count }
         Confirm-PrivilegedGroup @($target) $who $dialog.Owner $dialog {
             param($dialog)
-            & $dialog.OnDone $dialog.Context (Add-GroupMemberList $dialog.Row $dialog.Members)
+            Start-GroupMemberWrite $true $dialog.Row $dialog.Members $dialog.Owner $dialog.Context $dialog.OnDone
         }
     }
 }
 
 function Add-GroupMemberList($Row, $Members) {
     # The members ($Members: the picker's items) into the group, one by one, as Added (their names) and Failed (a line
-    # for each AD refused).
+    # for each AD refused). On a search runspace (Start-GroupMemberWrite): each one's Problem as it goes too
+    # (Add-WriteProgress, by index).
     $added = [System.Collections.Generic.List[string]]::new()
-    $failed = foreach ($member in $Members) {
+    $Members = @($Members)
+    $failed = for ($i = 0; $i -lt $Members.Count; $i++) {
+        $member = $Members[$i]
         try {
             # On the DC the window reads again (Invoke-UserChange: the PDC), so the member shows at once (#256).
             $null = Invoke-UserChange $Row.Domain { param($server) Add-ADGroupMember -Server $server -Identity $Row.DistinguishedName -Members $member.DistinguishedName -ErrorAction Stop }
             $added.Add($member.Name)
+            Add-WriteProgress $i @{ Problem = $null }
         }
-        catch { (Tr '✖ {0} : non ajouté à {1} ({2})') -f $member.Name, $Row.Name, $_.Exception.Message }
+        catch {
+            Add-WriteProgress $i @{ Problem = $_.Exception.Message }
+            (Tr '✖ {0} : non ajouté à {1} ({2})') -f $member.Name, $Row.Name, $_.Exception.Message
+        }
     }
     @{ Added = @($added); Failed = @($failed) }
+}
+
+function Start-GroupMemberWrite([bool]$Add, $Row, $Members, $Window, $Context, [scriptblock]$OnDone) {
+    # Ajouter des membres… ($Add) or Retirer… of a group, in the background (Add-GroupMemberList,
+    # Remove-GroupMemberList, Start-ADWrite): $Window, the window it was asked from, stays usable, its pointer saying it
+    # runs; a member already being added or removed is left out. Then, on the window's thread, & $OnDone $Context
+    # $result: Added or Removed, the names done; Failed, a line for each refused, or perhaps done (its DC didn't answer
+    # in time: Get-WriteAnswer).
+    $key = { param($member) "Member|$($Row.Domain)|$($Row.DistinguishedName)|$($member.DistinguishedName)" }
+    $pending = @($Members | Where-Object { -not (Test-ADWriteBusy (& $key $_)) })
+    if (-not $pending.Count) { return }
+    # Copies, as a runspace needs them: a picker's item has neither Domain nor Kind.
+    $copies = @(foreach ($member in $pending) {
+        $has = $member.PSObject.Properties
+        [pscustomobject]@{
+            Name = [string]$member.Name; DistinguishedName = [string]$member.DistinguishedName
+            Domain = [string]$(if ($has['Domain']) { $member.Domain }); Kind = [string]$(if ($has['Kind']) { $member.Kind })
+        }
+    })
+    $group = [pscustomobject]@{ Name = [string]$Row.Name; Domain = [string]$Row.Domain; DistinguishedName = [string]$Row.DistinguishedName }
+    $null = Start-ADWrite -Keys @($pending | ForEach-Object { & $key $_ }) -Command $(if ($Add) { 'Add-GroupMemberList' } else { 'Remove-GroupMemberList' }) `
+        -Arguments @($group, $copies) -Functions 'Get-GroupMemberObject' -Variables @{ MemberReadKinds = $script:MemberReadKinds } -Count $copies.Count -Window $Window `
+        -Context @{ Add = $Add; Group = $group; Members = $copies; Context = $Context; OnDone = $OnDone } -OnDone {
+        param($write, $outcome)
+        Complete-GroupMemberWrite $write $outcome
+    }
+}
+
+function Complete-GroupMemberWrite($Write, $Outcome) {
+    # Start-GroupMemberWrite's change: each member's line from what it did (Get-WriteAnswer), then its OnDone.
+    $done = [System.Collections.Generic.List[string]]::new()
+    $failed = @(for ($i = 0; $i -lt $Write.Members.Count; $i++) {
+        $member = $Write.Members[$i]
+        $answer = Get-WriteAnswer $Outcome $i
+        if ($answer.Unsure) { (Tr '⚠ {0} : {1}') -f $member.Name, (Get-WriteUnsureText $Outcome.Timeout) }
+        elseif ($answer.Problem) {
+            $format = if ($Write.Add) { Tr '✖ {0} : non ajouté à {1} ({2})' } else { Tr '✖ {0} : non retiré de {1} ({2})' }
+            $format -f $member.Name, $Write.Group.Name, $answer.Problem
+        }
+        else { $done.Add($member.Name) }
+    })
+    $result = if ($Write.Add) { @{ Added = @($done); Failed = $failed } } else { @{ Removed = @($done); Failed = $failed } }
+    & $Write.OnDone $Write.Context $result
 }
 
 function Find-GroupMemberChoice($Content) {
@@ -576,15 +628,19 @@ function Remove-GroupMember($State) {
         -Message $message -OkText (Tr 'Retirer') -CancelIsDefault -State @{ Detail = $State; Members = $members } -OnOk {
         param($dialog)
         $state = $dialog.Detail
-        $row = $state.Row
-        $result = Remove-GroupMemberList $row $dialog.Members
-        $removed = $result.Removed
-        Update-GroupDetail $state
-        if ($removed.Count) {
-            $text = if ($removed.Count -eq 1) { Tr '{0} retiré de {1}.' } else { Tr '{0} retirés de {1}.' }
-            Show-DetailNotice $state ($text -f (Join-FrenchList $removed), $row.Name)
+        # In the background (Start-GroupMemberWrite), then the window read again. Closed meanwhile: what failed is
+        # said over the main window.
+        Start-GroupMemberWrite $false $state.Row $dialog.Members $state.Window $state {
+            param($state, $result)
+            $removed = @($result.Removed)
+            $open = -not $state['Closed']
+            if ($open) { Update-GroupDetail $state }
+            if ($removed.Count -and $open) {
+                $text = if ($removed.Count -eq 1) { Tr '{0} retiré de {1}.' } else { Tr '{0} retirés de {1}.' }
+                Show-DetailNotice $state ($text -f (Join-FrenchList $removed), $state.Row.Name)
+            }
+            if ($result.Failed.Count) { Show-Dialog -Title (Tr 'Retirer du groupe') -Message ($result.Failed -join "`n") -Owner (Get-DetailOwner $state) }
         }
-        if ($result.Failed.Count) { Show-Dialog -Title (Tr 'Retirer du groupe') -Message ($result.Failed -join "`n") -Owner $state.Window }
     }
 }
 
@@ -593,11 +649,14 @@ function Remove-GroupMemberList($Row, $Members) {
     # Removed, their names, and Failed, a line each for the others. A member of another domain (a universal or domain
     # local group's) goes as read in its own domain, which the group's DC can't find by DN (Get-GroupMemberObject); a
     # foreign security principal is in the group's domain, by DN as before. A domain that doesn't answer is tried once:
-    # its other members fail with the same reason, rather than a timeout each on the UI thread.
+    # its other members fail with the same reason, rather than a timeout each. On a search runspace
+    # (Start-GroupMemberWrite): each one's Problem as it goes too (Add-WriteProgress, by index).
     $removed = [System.Collections.Generic.List[string]]::new()
     $read = @{}
     $down = @{}
-    $failed = @(foreach ($member in $Members) {
+    $Members = @($Members)
+    $failed = @(for ($i = 0; $i -lt $Members.Count; $i++) {
+        $member = $Members[$i]
         $why = $down[[string]$member.Domain]
         if (-not $why) {
             try { $as = Get-GroupMemberObject @{ Domain = $member.Domain; DistinguishedName = $member.DistinguishedName; Kind = $script:MemberReadKinds[$member.Kind] } $Row.Domain $read }
@@ -612,10 +671,12 @@ function Remove-GroupMemberList($Row, $Members) {
                 # On the DC the window reads again (Invoke-UserChange: the PDC), so it shows at once (#256).
                 $null = Invoke-UserChange $Row.Domain { param($server) Remove-ADGroupMember -Server $server -Identity $Row.DistinguishedName -Members $as -Confirm:$false -ErrorAction Stop }
                 $removed.Add($member.Name)
+                Add-WriteProgress $i @{ Problem = $null }
                 continue
             }
             catch { $why = $_.Exception.Message }
         }
+        Add-WriteProgress $i @{ Problem = $why }
         (Tr '✖ {0} : non retiré de {1} ({2})') -f $member.Name, $Row.Name, $why
     })
     @{ Removed = $removed; Failed = $failed }

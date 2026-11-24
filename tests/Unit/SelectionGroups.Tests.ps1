@@ -258,3 +258,40 @@ Describe "The selection's groups read and changed on each domain's PDC (#256)" {
         $script:GroupServersDown.Count | Should -Be 0
     }
 }
+
+Describe 'Test-GroupRefusal: AD''s refusals known by their codes, whatever Windows'' language' {
+    BeforeAll {
+        # An ADException as the ActiveDirectory module throws it: its Win32 code in ErrorCode, its text in German.
+        $script:NewADError = {
+            param([string]$Message, [int]$Code)
+            $failure = [System.InvalidOperationException]::new($Message)
+            Add-Member -InputObject $failure -NotePropertyName ErrorCode -NotePropertyValue $Code
+            $failure
+        }
+    }
+
+    It '<Case>: <Expected>' -ForEach @(
+        @{ Case = 'already a member, 1378'; Refusal = 'GroupAlreadyIn'; Failure = { & $NewADError 'Das angegebene Konto ist bereits Mitglied der Gruppe' 1378 }; Expected = $true }
+        @{ Case = 'not a member, 1377'; Refusal = 'GroupNotIn'; Failure = { & $NewADError 'Das angegebene Konto ist kein Mitglied der Gruppe' 1377 }; Expected = $true }
+        @{ Case = 'insufficient rights, 8344'; Refusal = 'GroupDenied'; Failure = { & $NewADError 'Unzureichende Zugriffsrechte' 8344 }; Expected = $true }
+        @{ Case = 'access denied, an UnauthorizedAccessException'; Refusal = 'GroupDenied'; Failure = { [System.UnauthorizedAccessException]::new('Zugriff verweigert') }; Expected = $true }
+        @{ Case = 'access denied, a Win32 code'; Refusal = 'GroupDenied'; Failure = { [System.ComponentModel.Win32Exception]::new(5, 'Zugriff verweigert') }; Expected = $true }
+        @{ Case = 'another refusal'; Refusal = 'GroupAlreadyIn'; Failure = { & $NewADError 'Unzureichende Zugriffsrechte' 8344 }; Expected = $false }
+        @{ Case = 'no code, in German'; Refusal = 'GroupDenied'; Failure = { [System.Exception]::new('Zugriff verweigert') }; Expected = $false }
+        @{ Case = 'no code, in French: its text'; Refusal = 'GroupAlreadyIn'; Failure = { [System.Exception]::new('Le compte spécifié est déjà membre du groupe') }; Expected = $true }
+        @{ Case = 'no code, in English: its text'; Refusal = 'GroupDenied'; Failure = { [System.Exception]::new('Insufficient access rights to perform the operation') }; Expected = $true }
+    ) {
+        Test-GroupRefusal (& $Failure) (Get-Variable -Scope Script -Name $Refusal -ValueOnly) | Should -Be $Expected
+    }
+
+    It 'Knows the fake AD''s refusals by their codes, as a real AD''s' {
+        # A member the group already has: nothing changes.
+        $group = Get-TestGroupItem 'GG-Ventes'
+        $member = @(Get-GroupMemberDN 'GG-Ventes')[0]
+        $member | Should -Not -BeNullOrEmpty
+        try { Add-ADGroupMember -Server 'demo.local' -Identity $group.DistinguishedName -Members $member -ErrorAction Stop; $caught = $null }
+        catch { $caught = $_.Exception }
+        $caught.ErrorCode | Should -Be 1378
+        Test-GroupRefusal $caught @{ Pattern = 'never matched'; Code = 1378 } | Should -BeTrue
+    }
+}

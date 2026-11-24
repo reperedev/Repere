@@ -387,3 +387,140 @@ Describe 'Get-RemoteFailureReason: « injoignable » only when Windows says the 
         Get-RemoteFailureReason $Failure | Should -BeExactly $Expected
     }
 }
+
+Describe 'Get-ErrorKind: an error known by its codes, whatever Windows'' language' {
+    BeforeAll {
+        # Windows' errors in German: neither the French nor the English text Repère used to match.
+        function New-CimError([string]$Message, [int64]$Code) {
+            # A CimException as CIM gives one, its code in its error data.
+            $data = CimCmdlets\New-CimInstance -ClassName MSFT_WmiError -Namespace root/cimv2 -ClientOnly -Property @{
+                error_Code = [uint32]$Code; Message = $Message; MessageID = 'HRESULT 0x{0:x8}' -f $Code; CIMStatusCode = [uint32]1
+            }
+            [Microsoft.Management.Infrastructure.CimException]::new($data)
+        }
+        function New-RemotingError([string]$Message, [int]$Code) {
+            $failure = [System.Management.Automation.Remoting.PSRemotingTransportException]::new($Message)
+            $failure.ErrorCode = $Code
+            $failure
+        }
+    }
+
+    It '<Case>: <Expected>' -ForEach @(
+        @{ Case = 'UnauthorizedAccessException'; Failure = { [System.UnauthorizedAccessException]::new('Zugriff verweigert') }; Expected = 'AccessDenied' }
+        @{ Case = 'Win32 code 5'; Failure = { [System.ComponentModel.Win32Exception]::new(5, 'Zugriff verweigert') }; Expected = 'AccessDenied' }
+        @{ Case = 'HRESULT 0x80070005'; Failure = { [System.Runtime.InteropServices.COMException]::new('Zugriff verweigert', 0x80070005) }; Expected = 'AccessDenied' }
+        @{ Case = 'WinRM''s access denied'; Failure = { New-RemotingError 'Verbindung mit dem Remoteserver fehlgeschlagen: Zugriff verweigert' 5 }; Expected = 'AccessDenied' }
+        @{ Case = 'HRESULT 0x800706BA'; Failure = { [System.Runtime.InteropServices.COMException]::new('Der RPC-Server ist nicht verfügbar.', 0x800706BA) }; Expected = 'RpcUnavailable' }
+        @{ Case = 'Win32 code 1722'; Failure = { [System.ComponentModel.Win32Exception]::new(1722, 'Der RPC-Server ist nicht verfügbar.') }; Expected = 'RpcUnavailable' }
+        @{ Case = 'CIM over DCOM'; Failure = { New-CimError 'Der RPC-Server ist nicht verfügbar.' 0x800706BAL }; Expected = 'RpcUnavailable' }
+        @{ Case = 'CIM over WinRM'; Failure = { New-CimError 'Der Client kann keine Verbindung mit dem in der Anforderung angegebenen Ziel herstellen.' 0x80338012L }; Expected = 'WinRMUnreachable' }
+        @{ Case = 'PowerShell''s remoting'; Failure = { New-RemotingError 'Der Client kann keine Verbindung herstellen.' 0x80338012 }; Expected = 'WinRMUnreachable' }
+        @{ Case = 'WMI''s invalid namespace'; Failure = { [System.Runtime.InteropServices.COMException]::new('Ungültiger Namespace', 0x8004100E) }; Expected = 'InvalidNamespace' }
+        @{ Case = 'the FullyQualifiedErrorId of a CIM error'; Failure = { [System.Management.Automation.ErrorRecord]::new([System.Exception]::new('Der RPC-Server ist nicht verfügbar.'), 'HRESULT 0x800706ba,Microsoft.Management.Infrastructure.CimCmdlets.NewCimSessionCommand', 'ConnectionError', $null) }; Expected = 'RpcUnavailable' }
+        @{ Case = 'wrapped in another exception'; Failure = { [System.Exception]::new('Fehler', [System.UnauthorizedAccessException]::new('Zugriff verweigert')) }; Expected = 'AccessDenied' }
+    ) {
+        Get-ErrorKind (& $Failure) | Should -Be $Expected
+    }
+
+    It 'Knows nothing of a text, nor of an error without a code it knows, whatever its words' {
+        Get-ErrorKind 'Access is denied' | Should -BeNullOrEmpty
+        Get-ErrorKind ([System.Exception]::new('Accès refusé')) | Should -BeNullOrEmpty
+        Get-ErrorKind ([System.ComponentModel.Win32Exception]::new(2, 'Das System kann die angegebene Datei nicht finden.')) | Should -BeNullOrEmpty
+        Get-ErrorKind $null | Should -BeNullOrEmpty
+    }
+
+    It 'Finds the codes of an error thrown on another runspace, through what PowerShell wraps it in' {
+        $shell = [powershell]::Create()
+        $null = $shell.AddScript({ $ErrorActionPreference = 'Stop'; throw [System.Runtime.InteropServices.COMException]::new('Der RPC-Server ist nicht verfügbar.', 0x800706BA) })
+        try { $null = $shell.Invoke(); $kinds = 'no error' }
+        catch { $kinds = @(Get-ErrorKind $_) }
+        finally { $shell.Dispose() }
+        $kinds | Should -Be 'RpcUnavailable'
+    }
+
+    It 'Finds every cause Repère joined into one message' {
+        $failure = [System.Exception]::new('WinRM : Zugriff verweigert | DCOM : Der RPC-Server ist nicht verfügbar.', [System.ComponentModel.Win32Exception]::new(1722))
+        $failure.Data['Repere.Causes'] = @([System.UnauthorizedAccessException]::new('Zugriff verweigert'), $null)
+        @(Get-ErrorKind $failure) | Sort-Object | Should -Be 'AccessDenied', 'RpcUnavailable'
+    }
+
+    It 'Keeps the kinds with the message as Add-ErrorKind gives it, and the text as it is' {
+        $failure = Add-ErrorKind 'Der RPC-Server ist nicht verfügbar.' ([System.ComponentModel.Win32Exception]::new(1722))
+        "$failure" | Should -BeExactly 'Der RPC-Server ist nicht verfügbar.'
+        Get-ErrorKind $failure | Should -Be 'RpcUnavailable'
+        $plain = Add-ErrorKind 'Boom' ([System.Exception]::new('Boom'))
+        $plain | Should -BeOfType [string]
+        $plain.PSObject.Properties['ErrorKind'] | Should -BeNullOrEmpty
+    }
+
+    It 'Gets them from the fake computers'' errors, as from a real one''s: <Case>' -ForEach @(
+        @{ Case = 'neither WinRM nor DCOM answers'; Expected = 'RpcUnavailable' }
+    ) {
+        try { $null = New-RemoteCimSession 'ord-06.demo.local'; $caught = $null }
+        catch { $caught = $_ }
+        $caught.Exception.Message | Should -BeLike 'WinRM : WinRM cannot complete the operation.* | DCOM : The RPC server is unavailable.'
+        Get-ErrorKind $caught | Should -Be $Expected
+    }
+
+    Context 'In what the remote actions say' {
+        BeforeAll {
+            $source = Get-RepereScriptAst (Join-Path $script:RepereSource 'ComputerActions.ps1')
+            foreach ($name in 'Test-RemoteUnreachable', 'Get-RemoteFailureReason', 'Get-SpecsCheckWarning') {
+                $definition = $source.Find({ param($node) $node -is [System.Management.Automation.Language.FunctionDefinitionAst] -and $node.Name -eq $name }, $true)
+                . ([scriptblock]::Create($definition.Extent.Text))
+            }
+            $script:Rpc = Add-ErrorKind 'DCOM : Der RPC-Server ist nicht verfügbar.' ([System.ComponentModel.Win32Exception]::new(1722))
+            $script:Denied = Add-ErrorKind 'DCOM : Zugriff verweigert' ([System.UnauthorizedAccessException]::new('Zugriff verweigert'))
+            $script:WinRM = Add-ErrorKind 'Der Client kann keine Verbindung herstellen.' (New-RemotingError 'Der Client kann keine Verbindung herstellen.' 0x80338012)
+            $both = [System.Exception]::new('WinRM : Zugriff verweigert | DCOM : Der RPC-Server ist nicht verfügbar.', [System.ComponentModel.Win32Exception]::new(1722))
+            $both.Data['Repere.Causes'] = @([System.UnauthorizedAccessException]::new('Zugriff verweigert'))
+            $script:Both = Add-ErrorKind $both.Message $both
+            $script:Namespace = Add-ErrorKind 'Ungültiger Namespace' ([System.Runtime.InteropServices.COMException]::new('Ungültiger Namespace', 0x8004100E))
+        }
+
+        It 'Says in a toast a computer that does not answer RPC, and only that' {
+            Test-RemoteUnreachable $Rpc | Should -BeTrue
+            Test-RemoteUnreachable $Denied | Should -BeFalse
+            Test-RemoteUnreachable $WinRM | Should -BeFalse
+            Test-RemoteUnreachable $Both | Should -BeFalse
+            Test-RemoteUnreachable $Namespace | Should -BeFalse
+        }
+
+        It 'Says why in French: <Case>' -ForEach @(
+            @{ Case = 'RPC'; Name = 'Rpc'; Expected = 'ordinateur injoignable (DCOM : Der RPC-Server ist nicht verfügbar.)' }
+            @{ Case = 'access denied'; Name = 'Denied'; Expected = "accès refusé (il faut être administrateur de l'ordinateur)" }
+            @{ Case = 'WinRM'; Name = 'WinRM'; Expected = 'ordinateur injoignable (Der Client kann keine Verbindung herstellen.)' }
+            @{ Case = 'access denied over WinRM, RPC over DCOM'; Name = 'Both'; Expected = "accès refusé (il faut être administrateur de l'ordinateur)" }
+            @{ Case = 'another code'; Name = 'Namespace'; Expected = 'Ungültiger Namespace' }
+        ) {
+            Get-RemoteFailureReason (Get-Variable -Scope Script -Name $Name -ValueOnly) | Should -BeExactly $Expected
+        }
+
+        It 'Says Caractéristiques'' access denied by the errors'' codes: <Case>' -ForEach @(
+            @{ Case = 'denied over DCOM'; Dcom = { [System.ComponentModel.Win32Exception]::new(5, 'Zugriff verweigert') }; Message = "Accès refusé : il faut être administrateur de l'ordinateur."; Icon = 'lock' }
+            @{ Case = 'RPC over DCOM'; Dcom = { [System.ComponentModel.Win32Exception]::new(1722, 'Der RPC-Server ist nicht verfügbar.') }; Message = 'WinRM est fermé, et la connexion par DCOM a échoué.'; Icon = 'info' }
+        ) {
+            $cause = & $Dcom
+            $answer = [pscustomobject]@{ State = 'Failed'; WinRMError = $null; DcomError = $cause.Message; Causes = @($null, $cause) }
+            $warning = Get-SpecsCheckWarning 'ORD-06' $answer ''
+            $warning.Message | Should -BeExactly $Message
+            $warning.Icon | Should -BeExactly $Icon
+            $warning.Details | Should -BeExactly "WinRM : le port 5985 ne répond pas`nDCOM : $($cause.Message)"
+        }
+    }
+}
+Describe 'Get-SessionQueryProblem: why quser listed no session, by the codes in its text' {
+    It '<Case>' -ForEach @(
+        @{ Case = 'access denied, in German'; Text = "Fehler 0x00000005 beim Aufzählen der Sitzungsnamen`nFehler [5]:Zugriff verweigert"; Problem = $true; Message = "Accès refusé : il faut être administrateur de l'ordinateur." }
+        @{ Case = 'RPC, in German'; Text = "Fehler 0x000006BA beim Aufzählen der Sitzungsnamen`nFehler [1722]:Der Server ist nicht verfügbar."; Problem = $true; Message = "L'ordinateur ne répond pas : il est éteint ou injoignable, ou il refuse les requêtes de sessions à distance (AllowRemoteRPC à 0, ou pare-feu)." }
+        @{ Case = 'RPC, in French'; Text = "Erreur 0x000006BA lors de l'énumération des noms de sessions`nErreur [1722]:Le serveur RPC n'est pas disponible."; Problem = $true; Message = "L'ordinateur ne répond pas : il est éteint ou injoignable, ou il refuse les requêtes de sessions à distance (AllowRemoteRPC à 0, ou pare-feu)." }
+        # quser gives no code when nobody is logged on: its text, in English or French.
+        @{ Case = 'nobody, in English'; Text = 'No User exists for *'; Problem = $false; Message = "Personne n'a de session ouverte sur cet ordinateur." }
+        @{ Case = 'nobody, in French'; Text = 'Aucun utilisateur pour *'; Problem = $false; Message = "Personne n'a de session ouverte sur cet ordinateur." }
+        @{ Case = 'anything else'; Text = 'Etwas ist schiefgelaufen'; Problem = $true; Message = 'Les sessions ouvertes sur cet ordinateur n''ont pas pu être lues.' }
+    ) {
+        $reason = Get-SessionQueryProblem $Text
+        $reason.Problem | Should -Be $Problem
+        $reason.Message | Should -BeExactly $Message
+    }
+}

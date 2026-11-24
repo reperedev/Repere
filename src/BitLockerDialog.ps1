@@ -242,9 +242,9 @@ function Set-BitLockerKeySelected($Box, [bool]$Selected) {
 }
 
 function Update-BitLockerFooter($State) {
-    # The buttons and the count, as the ticked keys say.
+    # The buttons and the count, as the ticked keys say. Supprimer waits while keys are being deleted.
     $count = @($State.Rows | Where-Object Selected).Count
-    $State.Delete.IsEnabled = $count -gt 0
+    $State.Delete.IsEnabled = $count -gt 0 -and -not $State['Removing']
     $State.DeleteLabel.Text = switch ($count) { 0 { Tr 'Supprimer…' } 1 { Tr 'Supprimer la clé…' } default { (Tr 'Supprimer {0} clés…') -f $count } }
     $State.Selection.Text = switch ($count) { 0 { Tr 'Aucune clé cochée' } 1 { Tr '1 clé cochée' } default { (Tr '{0} clés cochées') -f $count } }
     $State.SelectOld.IsEnabled = [bool]@($State.Rows | Where-Object { -not $_.Latest }).Count
@@ -253,7 +253,7 @@ function Update-BitLockerFooter($State) {
 function Remove-BitLockerKey($State) {
     # Confirms, then deletes the ticked keys from AD, one at a time; a key that can't be deleted stays listed.
     $keys = @($State.Rows | Where-Object Selected)
-    if (-not $keys.Count) { return }
+    if (-not $keys.Count -or $State['Removing']) { return }
     $question = if ($keys.Count -eq 1) { Tr "Supprimer cette clé BitLocker de l'AD ?" } else { (Tr "Supprimer ces {0} clés BitLocker de l'AD ?") -f $keys.Count }
     $message = Tr "Seule la copie enregistrée dans l'AD est supprimée : le disque garde sa clé. Si elle protège encore un disque, elle ne pourra plus être retrouvée ici le jour où il faudra le déverrouiller. Cette action est définitive."
     $readAs = "$question`n`n$message"
@@ -273,26 +273,71 @@ function Remove-BitLockerKey($State) {
     Show-Dialog -Title (Tr 'Supprimer des clés BitLocker') -Heading $question -Message $message -MessageName $readAs -Icon 'trash' -Tone 'danger' -Content $warning `
         -Details $details -DetailsLabel (Tr 'Clés supprimées (à copier avant au besoin)') -SecretDetails -OkText (Tr 'Supprimer') -CancelIsDefault -Owner $State.Window -State @{ Keys = $keys; Dialog = $State } -OnOk {
         param($confirm)
-        $state = $confirm.Dialog
-        $report = foreach ($key in $confirm.Keys) {
-            $shortId = "$($key.KeyId)".Split('-')[0]
-            try {
-                Remove-ADObject -Server $key.Domain -Identity $key.DistinguishedName -Confirm:$false -ErrorAction Stop
-                $state.Rows.Remove($key) | Out-Null
-                (Tr '✔ {0} : clé {1}') -f $key.ComputerName, $shortId
-            }
-            catch {
-                (Tr '✖ {0} : clé {1} non supprimée ({2})') -f $key.ComputerName, $shortId, $_.Exception.Message
-            }
-        }
-        Update-BitLockerBody $state
-        Show-ActionReport @($report) (Tr 'Supprimer des clés BitLocker') -Owner $state.Window -Many (Tr '✔ {0} clés') -Outcome (Tr 'Clé supprimée'), (Tr 'Clés supprimées')
+        Start-BitLockerRemoval $confirm.Dialog $confirm.Keys
     }
+}
+
+function Start-BitLockerRemoval($State, $Keys) {
+    # The keys deleted in the background (Remove-BitLockerKeyList, Start-ADWrite): the window usable meanwhile, its
+    # pointer saying it runs, Supprimer waiting (Update-BitLockerFooter). The keys' passwords stay on this thread: the
+    # runspace gets each key's DN and domain only. Then Complete-BitLockerRemoval.
+    $Keys = @($Keys)
+    $State.Removing = $true
+    Update-BitLockerFooter $State
+    try {
+        $started = Start-ADWrite -Keys @($Keys | ForEach-Object { "BitLocker|$($_.Domain)|$($_.DistinguishedName)" }) -Command 'Remove-BitLockerKeyList' `
+            -Arguments @(, @($Keys | ForEach-Object { [pscustomobject]@{ Domain = [string]$_.Domain; DistinguishedName = [string]$_.DistinguishedName } })) `
+            -Count $Keys.Count -Window $State.Window -Context @{ State = $State; Keys = $Keys } -OnDone {
+            param($write, $outcome)
+            Complete-BitLockerRemoval $write.State $write.Keys $outcome
+        }
+    }
+    catch { $started = $false; Write-Host "Clés BitLocker non supprimées : $_" }
+    if (-not $started) {
+        $State.Removing = $false
+        Update-BitLockerFooter $State
+    }
+}
+
+function Remove-BitLockerKeyList($Keys) {
+    # On a search runspace: each key deleted from AD, one at a time, in its domain. Each one's Problem as it goes
+    # (Add-WriteProgress, by index), $null once deleted.
+    $Keys = @($Keys)
+    for ($i = 0; $i -lt $Keys.Count; $i++) {
+        $key = $Keys[$i]
+        $problem = try {
+            Remove-ADObject -Server $key.Domain -Identity $key.DistinguishedName -Confirm:$false -ErrorAction Stop
+            $null
+        }
+        catch { $_.Exception.Message }
+        Add-WriteProgress $i @{ Problem = $problem }
+    }
+}
+
+function Complete-BitLockerRemoval($State, $Keys, $Outcome) {
+    # The keys deleted leave the list; one that can't be deleted stays listed, as does one perhaps deleted (the DC
+    # didn't answer in time: Get-WriteAnswer), which its line says to check. Then the report, over the window, or the
+    # main one once it has closed.
+    $State.Removing = $false
+    $report = for ($i = 0; $i -lt $Keys.Count; $i++) {
+        $key = $Keys[$i]
+        $shortId = "$($key.KeyId)".Split('-')[0]
+        $answer = Get-WriteAnswer $Outcome $i
+        if ($answer.Unsure) { (Tr '⚠ {0} : clé {1} peut-être supprimée ({2}), vérifiez') -f $key.ComputerName, $shortId, $Outcome.Problem }
+        elseif ($answer.Problem) { (Tr '✖ {0} : clé {1} non supprimée ({2})') -f $key.ComputerName, $shortId, $answer.Problem }
+        else {
+            $State.Rows.Remove($key) | Out-Null
+            (Tr '✔ {0} : clé {1}') -f $key.ComputerName, $shortId
+        }
+    }
+    $open = $State.Window.IsVisible
+    if ($open) { Update-BitLockerBody $State }
+    Show-ActionReport @($report) (Tr 'Supprimer des clés BitLocker') -Owner $(if ($open) { $State.Window }) -Many (Tr '✔ {0} clés') -Outcome (Tr 'Clé supprimée'), (Tr 'Clés supprimées')
 }
 
 function Show-BitLockerDialog($Computers, $Owner, $Icon) {
     # Reads every computer's keys in the background, then the window.
-    Start-WindowRead -Kind 'BitLocker' -Command 'Read-BitLockerRow' -Arguments @(, @(ConvertTo-ReadComputer $Computers)) -Functions 'Get-BitLockerKey' `
+    Start-WindowRead -Kind 'BitLocker' -Command 'Read-BitLockerRow' -Arguments @(, @(ConvertTo-ReadComputer $Computers)) -Functions 'Get-BitLockerKey' -Timeout (Get-ReadTimeout @($Computers).Count) `
         -Context @{ Computers = $Computers; Owner = $Owner; Icon = $Icon } -OnDone {
         param($context, $read, $problem)
         if ($problem -or -not $read) {

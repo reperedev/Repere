@@ -31,8 +31,9 @@ function New-PSDrive {
     param([string]$Name, [string]$PSProvider, [string]$Root, [string]$Scope)
 
     if ($PSProvider -ne 'CMSite') { throw "Provider '$PSProvider' not found." }
-    if ($env:REPERE_FAKEAD_SCCM_UNREACHABLE -or $Root -ne $script:Server) { throw 'The RPC server is unavailable.' }
-    if ($Name -ne $script:Site) { throw 'Invalid namespace' }
+    # With their codes, as Windows gives them: Repère knows them by those (Get-ErrorKind), not by their text.
+    if ($env:REPERE_FAKEAD_SCCM_UNREACHABLE -or $Root -ne $script:Server) { throw [System.Runtime.InteropServices.COMException]::new('The RPC server is unavailable.', 0x800706BA) }
+    if ($Name -ne $script:Site) { throw [System.Runtime.InteropServices.COMException]::new('Invalid namespace', 0x8004100E) }
     if ($env:REPERE_FAKEAD_SCCM_ERROR) {
         $PSCmdlet.WriteError([System.Management.Automation.ErrorRecord]::new(
                 [System.InvalidOperationException]::new($env:REPERE_FAKEAD_SCCM_ERROR), 'FakeSccmError', 'InvalidOperation', $Name))

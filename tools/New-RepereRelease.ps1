@@ -47,6 +47,21 @@ if ($end -lt 0) { $end = $changelog.Count }
 $notes = if ($end -gt $start + 1) { ($changelog[($start + 1)..($end - 1)] -join "`r`n").Trim() }
 if (-not $notes) { throw "CHANGELOG.md's $version entry is empty." }
 
+# The Windows releases' table (PCSpecs.ps1), which says which computers are out of support: a warning, not a refusal,
+# when it looks stale. A Windows 11 release is supported 24 months for Home and Pro, and a new one ships every year: so
+# while the table is up to date, its newest release's end for Pro is more than a year away. Less than that, a release
+# has most likely shipped since, which the table doesn't have: its computers then show only their build, without an end
+# of support.
+$releaseEnds = @(Select-String -LiteralPath (Join-Path $repo 'src\PCSpecs.ps1') -Pattern "^\s*\d{5} = @\{ Name = '[^']+'; Pro = \[datetime\]'(\d{4}-\d{2}-\d{2})'" |
+    ForEach-Object { [datetime]::ParseExact($_.Matches[0].Groups[1].Value, 'yyyy-MM-dd', [cultureinfo]::InvariantCulture) })
+if (-not $releaseEnds.Count) { Write-Warning "Table des versions de Windows introuvable dans src\PCSpecs.ps1 (`$script:WindowsReleases) : vérifiez-la à la main." }
+else {
+    $newestEnd = ($releaseEnds | Measure-Object -Maximum).Maximum
+    if ($newestEnd -lt (Get-Date).Date.AddMonths(12)) {
+        Write-Warning ("La version de Windows la plus récente de src\PCSpecs.ps1 (`$script:WindowsReleases) n'est plus supportée (Pro) après le {0:yyyy-MM-dd}, dans moins d'un an : une version plus récente est sans doute sortie. Ajoutez-la d'après learn.microsoft.com/windows/release-health." -f $newestEnd)
+    }
+}
+
 # What goes in: the scripts by what the main one dot-sources, the folders and files by what git tracks.
 # Names as they are (Repère.cmd, not "Rep\303\250re.cmd"), read as UTF-8 whatever the console's code page.
 $consoleEncoding = [Console]::OutputEncoding

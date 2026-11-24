@@ -20,12 +20,16 @@ $script:RemoteAccessScript = {
         $wsmanError = $null
         if (-not $DcomOnly) {
             try { return New-CimSession @common }
-            catch { $wsmanError = $_.Exception.Message.Trim() }
+            catch { $wsmanError = $_ }
         }
         try { New-CimSession @common -SessionOption (New-CimSessionOption -Protocol Dcom) }
         catch {
-            if ($wsmanError) { throw (Tr 'WinRM : {0} | DCOM : {1}') -f $wsmanError, $_.Exception.Message.Trim() }
-            throw (Tr 'DCOM : {0}') -f $_.Exception.Message.Trim()
+            # The messages, said as one, and the errors kept with them for their codes (Get-ErrorKind, Errors.ps1).
+            $message = if ($wsmanError) { (Tr 'WinRM : {0} | DCOM : {1}') -f $wsmanError.Exception.Message.Trim(), $_.Exception.Message.Trim() }
+                       else { (Tr 'DCOM : {0}') -f $_.Exception.Message.Trim() }
+            $failure = [System.Exception]::new($message, $_.Exception)
+            $failure.Data['Repere.Causes'] = @($wsmanError, $_)
+            throw $failure
         }
     }
 

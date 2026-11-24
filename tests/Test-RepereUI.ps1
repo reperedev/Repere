@@ -1876,7 +1876,7 @@ function Test-SpecsWindow {
            }
            # A desktop: neither Batterie nor Station d'accueil (#271).
            Hidden = 'spec_Battery_Capacity', 'toggle_Battery', 'spec_Dock_Status', 'toggle_Dock', 'spec_Processor_Vendor', 'spec_Processor_Extra', 'spec_Memory_Maker', 'spec_Memory_Part'
-           Alerts = "⛔  Windows 10 22H2 n'est plus supporté depuis le 2025-10-14.`n⛔  Volume C: plein à 94 % (14 Go libres)." }
+           Alerts = "⛔  Windows 10 22H2 n'est plus supporté depuis le 2025-10-14. Un ordinateur inscrit aux mises à jour de sécurité étendues (ESU) reste à jour pour la sécurité.`n⛔  Volume C: plein à 94 % (14 Go libres)." }
         # Off, or not in the DNS: a toast, as Vérifier en ligne says it, and no dialog to close.
         @{ Name = 'ORD-06'; Via = 'menu'; Notice = 'Caractéristiques : ✖ ORD-06 : hors ligne (pas de réponse au ping, ni à WinRM ni à DCOM)' }
         @{ Name = 'ORD-03'; Via = 'menu'; Notice = "Caractéristiques : ✖ ORD-03 : introuvable (son nom n'est pas dans le DNS)" }
@@ -3370,14 +3370,17 @@ function Test-Export {
             if ($bytes[0] -ne 0xEF -or $bytes[1] -ne 0xBB -or $bytes[2] -ne 0xBF) { $problems.Add('the file has no UTF-8 BOM') }
             $separator = (Get-Culture).TextInfo.ListSeparator
             $header = (Get-Content -LiteralPath $exportFile -Encoding utf8 -TotalCount 1)
-            $expectedHeader = @('Nom', 'Description', 'Compte', 'Système', 'Version de Windows', 'Dernière connexion', 'Domaine', 'Emplacement', 'Nom distinctif') -join $separator
-            if ($header -ne $expectedHeader) { $problems.Add("the header is '$header', expected '$expectedHeader'") }
+            # The columns shown, in the grid's order (Système writing two), and the distinguished name always last. En
+            # ligne and its address once an earlier check has shown the column.
+            $shownColumns = @('Compte', 'Nom', 'Description', 'Dernière connexion', 'Système', 'Version de Windows', 'Domaine', 'Emplacement')
+            $expectedHeaders = @(($shownColumns + 'Nom distinctif') -join $separator), (($shownColumns + 'En ligne', 'Adresse IP', 'Nom distinctif') -join $separator)
+            if ($header -notin $expectedHeaders) { $problems.Add("the header is '$header', expected '$($expectedHeaders[0])'") }
             $rows = Read-Export
             $names = @($rows | ForEach-Object Nom)
             if (($names -join ', ') -ne ($shown -join ', ')) { $problems.Add("rows saved: $($names -join ', '); shown: $($shown -join ', ')") }
             $row = @($rows | Where-Object Nom -eq 'ORD-02')[0]
             if (-not $row -or $row.'Compte' -ne 'Activé' -or $row.'Système' -ne 'Win 11 24H2' -or $row.'Version de Windows' -ne 'Windows 11 Professionnel 10.0 (26100)' -or
-                $row.'Dernière connexion' -notmatch '^\d{4}-\d\d-\d\d \d\d:\d\d$' -or $row.Emplacement -ne 'demo.local/Postes' -or $row.'Nom distinctif' -ne 'CN=ORD-02,OU=Postes,DC=demo,DC=local') {
+                $row.'Dernière connexion' -notmatch '^\d{4}-\d\d-\d\d \d\d:\d\d$' -or $row.Emplacement -ne 'Postes' -or $row.'Nom distinctif' -ne 'CN=ORD-02,OU=Postes,DC=demo,DC=local') {
                 $problems.Add("ORD-02 is saved as: $($row | ConvertTo-Json -Compress)")
             }
             $note = (Find-Control 'search_time').Current.Name
@@ -4542,7 +4545,7 @@ function Test-UserPage {
         }
     }
 
-    Invoke-Check 'Utilisateurs: Exporter saves the users shown as CSV, with their email and distinguished name' {
+    Invoke-Check 'Utilisateurs: Exporter saves the users shown as CSV, the columns shown (not Courriel, hidden) and the distinguished name' {
         param($problems)
         Remove-Item $exportFile -ErrorAction SilentlyContinue
         Invoke-Element (Find-Control 'user_export')
@@ -4551,7 +4554,8 @@ function Test-UserPage {
         $logins = ($rows | ForEach-Object Identifiant) -join ', '
         if ($logins -ne 'jebertrand, jbertrand, pbertrand') { $problems.Add("logins exported: $logins") }
         $julie = @($rows | Where-Object Identifiant -eq 'jbertrand')[0]
-        if ($julie.Courriel -ne 'jbertrand@demo.local' -or $julie.'Nom distinctif' -ne 'CN=Julie Bertrand,OU=Utilisateurs,DC=demo,DC=local' -or $julie.'État' -ne 'Actif') {
+        if ($julie.PSObject.Properties['Courriel'] -or -not $julie.PSObject.Properties['Expiration du mot de passe'] -or
+            $julie.'Nom distinctif' -ne 'CN=Julie Bertrand,OU=Utilisateurs,DC=demo,DC=local' -or $julie.'État' -ne 'Actif') {
             $problems.Add("Julie's line: $($julie | ConvertTo-Json -Compress)")
         }
     }
@@ -6151,14 +6155,15 @@ function Test-GroupPage {
         if ($ScreenshotDirectory) { Save-Screenshot 'groupes' }
     }
 
-    Invoke-Check 'Groupes: Exporter saves the groups shown as CSV, and Colonnes offers the hidden ones' {
+    Invoke-Check 'Groupes: Exporter saves the groups shown as CSV, the columns shown, and Colonnes offers the hidden ones' {
         param($problems)
         Remove-Item $exportFile -ErrorAction SilentlyContinue
         Invoke-Element (Find-Control 'group_export')
         for ($i = 0; $i -lt 20 -and -not (Test-Path $exportFile); $i++) { Start-Sleep -Milliseconds 150 }
         $rows = @(Import-Csv -LiteralPath $exportFile -Delimiter (Get-Culture).TextInfo.ListSeparator -Encoding utf8)
         $accueil = @($rows | Where-Object Nom -eq 'GG-Accueil')[0]
-        if ($rows.Count -ne 7 -or $accueil.'Géré par' -ne 'Nathalie Lévy' -or $accueil.'Nom distinctif' -ne 'CN=GG-Accueil,OU=Groupes,DC=demo,DC=local') {
+        # Géré par is hidden until chosen in Colonnes: not saved either.
+        if ($rows.Count -ne 7 -or $accueil.PSObject.Properties['Géré par'] -or $accueil.'Étendue' -ne 'Globale' -or $accueil.'Nom distinctif' -ne 'CN=GG-Accueil,OU=Groupes,DC=demo,DC=local') {
             $problems.Add("$($rows.Count) lines, GG-Accueil's: $($accueil | ConvertTo-Json -Compress)")
         }
         Invoke-Element (Find-Control 'group_columns')

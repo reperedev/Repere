@@ -1,5 +1,20 @@
 ﻿# Journal des versions
 
+## 0.16.0 — à venir
+
+### Ordinateurs, Utilisateurs et Groupes
+- **La fenêtre ne se fige plus pendant une modification** : déverrouiller, **Nouveau mot de passe…**, activer ou désactiver, ajouter ou retirer des groupes, **Enregistrer** dans **Propriétés** et supprimer des clés BitLocker se font en arrière-plan. On peut continuer à chercher ; la même action, relancée sur les mêmes comptes pendant ce temps, est ignorée.
+  - Un contrôleur de domaine qui ne répond pas après 45 secondes ne fait plus attendre : le rapport dit « peut-être faite, vérifiez », en orange, plutôt qu'un échec, car la modification a pu passer.
+- **Un domaine qui ne répond pas n'arrête plus la recherche** : sans réponse après 20 secondes, il est laissé de côté, les autres domaines s'affichent et le compte dit « (sans réponse : 1) », avec le domaine dans l'info-bulle. Un contrôleur qui a commencé à répondre n'a pas de limite, même avec **Tout afficher**.
+  - **Propriétés**, **Mot de passe LAPS** et **Clés BitLocker** disent la même chose au bout de 30 secondes, au lieu d'attendre sans fin.
+- **Exporter et Copier les lignes suivent la grille** : les colonnes affichées, dans leur ordre, sous leur titre, et le nom distinctif en dernier. Une colonne masquée n'est plus exportée : par défaut, **Courriel** sur Utilisateurs et **Géré par** sur Groupes.
+- **Les erreurs de Windows sont comprises dans toutes les langues** : accès refusé, ordinateur injoignable, WinRM fermé ou site SCCM introuvable sont reconnus par leur code, et plus seulement par leur texte en français ou en anglais.
+
+### Ordinateurs
+- **Exporter** donne **En ligne** et l'adresse IP quand la colonne est affichée, l'emplacement tel que la grille le montre (`Postes › Communs`) et la date exacte de la dernière connexion.
+- **Une version de Windows plus récente que Repère** s'affiche par son numéro (« Windows 11 (build 26300) »), sans alerte ni couleur : l'info-bulle et **Caractéristiques** disent que sa fin de support n'est pas encore connue.
+- **Windows 10 22H2** : l'alerte de fin de support rappelle qu'un ordinateur inscrit aux mises à jour de sécurité étendues (ESU) reste à jour pour la sécurité.
+
 ## 0.15.1 — 2026-11-23
 
 ### Ordinateurs, Utilisateurs et Groupes
