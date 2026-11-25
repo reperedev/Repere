@@ -130,3 +130,70 @@ Describe 'ConvertFrom-ChangelogInline: the Markdown of a headline' {
         (ConvertFrom-ChangelogInline $Text | ForEach-Object { "$(if ($_.Bold) { 'Bold ' })$($_.Kind):$($_.Text)" }) -join '|' | Should -BeExactly $Expected
     }
 }
+
+Describe 'In English: CHANGELOG.en.md' {
+    It 'Has every version from 0.15.1 on, with the same date, sections and points as in French' {
+        $english = @(Read-ChangelogEntry $script:ChangelogEnglishPath)
+        $french = @(Read-ChangelogEntry $script:ChangelogPath | Where-Object Version -GE ([version]'0.15.1'))
+        "$($english.Version)" | Should -BeExactly "$($french.Version)"
+        $areas = [ordered]@{ 'Ordinateurs' = 'Computers'; 'Utilisateurs' = 'Users'; 'Groupes' = 'Groups'; 'Paramètres' = 'Settings'; ' et ' = ' and ' }
+        for ($i = 0; $i -lt $french.Count; $i++) {
+            ($english[$i].Heading -replace 'coming soon', 'à venir') | Should -BeExactly $french[$i].Heading
+            $shape = { param($Entry) @(Get-ChangelogSummary $Entry | ForEach-Object {
+                        $name = $_.Name
+                        foreach ($area in $areas.GetEnumerator()) { $name = $name.Replace($area.Key, $area.Value) }
+                        "$name ($($_.Headlines.Count))"
+                    }) -join ' | ' }
+            & $shape $english[$i] | Should -BeExactly (& $shape $french[$i])
+            @($english[$i].Lines | Where-Object { $_ -match '^\s+- ' }).Count | Should -Be @($french[$i].Lines | Where-Object { $_ -match '^\s+- ' }).Count
+        }
+    }
+
+    It 'Get-ShownChangelogEntry: the English in English, the French for a version without it, the French in French' {
+        $saved = $script:UILanguage
+        try {
+            $script:UILanguage = 'en'
+            $shown = Get-ShownChangelogEntry '0.15.1'
+            $shown.InEnglish | Should -BeTrue
+            @(Get-ChangelogSummary $shown)[1].Name | Should -BeExactly 'Computers'
+            $older = Get-ShownChangelogEntry '0.15.0'
+            $older.InEnglish | Should -BeFalse
+            @(Get-ChangelogSummary $older)[1].Name | Should -BeExactly 'Ordinateurs'
+            Get-ShownChangelogEntry '0.0.1' | Should -BeNullOrEmpty
+            $script:UILanguage = 'fr'
+            (Get-ShownChangelogEntry '0.15.1').InEnglish | Should -BeFalse
+        }
+        finally { $script:UILanguage = $saved }
+    }
+
+    It 'A headline, its colon without a space before: <Text>' -ForEach @(
+        @{ Text = '**Properties**: past 10 groups, a box filters **Groups**. The rest.'; Expected = '**Properties**: past 10 groups, a box filters **Groups**' }
+        @{ Text = '**Properties**, **Specifications** and **Compare groups**: the labels change. The rest.'; Expected = '**Properties**, **Specifications** and **Compare groups**: the labels change' }
+        @{ Text = 'It says "a: b. c" here; the rest.'; Expected = 'It says "a: b. c" here' }
+        @{ Text = '**Properties…** (right-click, or Alt+Enter): a computer''s AD properties, even off. The rest.'; Expected = '**Properties…**: a computer''s AD properties, even off' }
+        @{ Text = 'It opens at 09:30 (or later). The rest.'; Expected = 'It opens at 09:30' }
+        @{ Text = '**Specifications**:'; Expected = '**Specifications**' }
+    ) {
+        Get-ChangelogHeadline $Text | Should -BeExactly $Expected
+    }
+
+    It 'A name and its colon alone has its first sub-point''s headline' {
+        $entry = [pscustomobject]@{ Lines = @('### Computers', '- **Specifications**:', '  - a **Members** box: its detail;', '  - another.') }
+        @(Get-ChangelogSummary $entry)[0].Headlines | Should -BeExactly '**Specifications**: a **Members** box'
+    }
+
+    It "A section's name and icon: <Name>" -ForEach @(
+        @{ Name = 'Computers, Users and Groups'; Shown = 'General'; Icon = 'layers' }
+        @{ Name = 'Users and Groups'; Shown = 'Users and Groups'; Icon = 'layers' }
+        @{ Name = 'Computers'; Shown = 'Computers'; Icon = 'monitor' }
+        @{ Name = 'Reliability and security'; Shown = 'Reliability and security'; Icon = 'lock' }
+        @{ Name = 'Fixes'; Shown = 'Fixes'; Icon = 'check' }
+    ) {
+        [System.AppDomain]::CurrentDomain.SetData('Repere.TextTable', (Read-TextTable (Join-Path $script:RepereSource 'Language.en.psd1')))
+        try {
+            Get-ChangelogSectionName $Name | Should -BeExactly $Shown
+            Get-ChangelogIcon $Name | Should -BeExactly $Icon
+        }
+        finally { [System.AppDomain]::CurrentDomain.SetData('Repere.TextTable', $null) }
+    }
+}

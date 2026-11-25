@@ -528,11 +528,13 @@ function Read-FakeADUnary($State) {
 }
 
 function Test-FakeADLike {
-    # AD's -like only knows the * wildcard, and never matches an attribute that isn't set.
+    # AD's -like only knows the * wildcard (a literal * is \2a and a backslash \5c), and never matches an attribute that
+    # isn't set.
     param($Value, [string]$Pattern)
 
     if ($null -eq $Value) { return $false }
-    $regex = '^' + ([regex]::Escape($Pattern) -replace '\\\*', '.*') + '$'
+    $parts = foreach ($part in $Pattern -split '\*') { [regex]::Escape(($part -replace '\\2a', '*' -replace '\\5c', '\')) }
+    $regex = '^' + ($parts -join '.*') + '$'
     return [regex]::IsMatch($Value, $regex, 'IgnoreCase')
 }
 

@@ -9,11 +9,14 @@
   - **Propriétés**, **Mot de passe LAPS** et **Clés BitLocker** disent la même chose au bout de 30 secondes, au lieu d'attendre sans fin.
 - **Exporter et Copier les lignes suivent la grille** : les colonnes affichées, dans leur ordre, sous leur titre, et le nom distinctif en dernier. Une colonne masquée n'est plus exportée : par défaut, **Courriel** sur Utilisateurs et **Géré par** sur Groupes.
 - **Les erreurs de Windows sont comprises dans toutes les langues** : accès refusé, ordinateur injoignable, WinRM fermé ou site SCCM introuvable sont reconnus par leur code, et plus seulement par leur texte en français ou en anglais.
+- **Nouveautés est en anglais** quand Repère l'est, à partir de cette version, comme les questions du lanceur (PowerShell 7.5 absent) et les messages de la console.
 
 ### Ordinateurs
-- **Exporter** donne **En ligne** et l'adresse IP quand la colonne est affichée, l'emplacement tel que la grille le montre (`Postes › Communs`) et la date exacte de la dernière connexion.
+- **Désactiver** et **Déplacer vers…** laissent de nouveau de côté un contrôleur de domaine, ou l'ordinateur où Repère est ouvert, quand plusieurs ordinateurs sont sélectionnés : ils n'étaient épargnés que sélectionnés seuls.
+- **Exporter** donne **En ligne** et l'adresse IP quand la colonne est affichée, l'emplacement tel que la grille le montre (`Postes › Communs`) et la date exacte de la dernière connexion. Le fichier proposé porte le nom du domaine cherché, `Repere_ordinateurs_demo.local_2026-11-24.csv`, ou aucun quand il y en a plusieurs.
 - **Une version de Windows plus récente que Repère** s'affiche par son numéro (« Windows 11 (build 26300) »), sans alerte ni couleur : l'info-bulle et **Caractéristiques** disent que sa fin de support n'est pas encore connue.
 - **Windows 10 22H2** : l'alerte de fin de support rappelle qu'un ordinateur inscrit aux mises à jour de sécurité étendues (ESU) reste à jour pour la sécurité.
+- **Un `*` dans une recherche par description est une étoile**, et plus n'importe quel texte. Un `\` se trouve aussi.
 
 ## 0.15.1 — 2026-11-23
 

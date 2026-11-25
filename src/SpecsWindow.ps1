@@ -652,7 +652,7 @@ function Export-SpecsReport($State) {
 
 function Show-OpenSpecsWindow($Computer) {
     # The window of a computer, brought to the front when it's already open: whether it was.
-    $open = $script:SpecsWindows["$($Computer.Domain)|$($Computer.OU)"]
+    $open = $script:SpecsWindows["$($Computer.Domain)|$($Computer.DistinguishedName)"]
     if (-not $open) { return $false }
     if ($open.WindowState -eq 'Minimized') { $open.WindowState = 'Normal' }
     $null = $open.Activate()
@@ -663,7 +663,7 @@ function Show-SpecsWindow($Computer, $Owner, $Icon, [string]$FakeModule) {
     # Opens the window of a computer (a row of the results), or brings it to the front when it's already open. The
     # action checks first that the computer answers (Start-SpecsCheck, ComputerActions.ps1).
     if (Show-OpenSpecsWindow $Computer) { return }
-    $key = "$($Computer.Domain)|$($Computer.OU)"
+    $key = "$($Computer.Domain)|$($Computer.DistinguishedName)"
 
     $root = [System.Windows.Markup.XamlReader]::Parse((Expand-Icon (Get-SpecsWindowXaml)))
     $window = [System.Windows.Window]::new()

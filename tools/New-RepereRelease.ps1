@@ -1,5 +1,5 @@
 ﻿# Builds Repère's release: dist\Repere-<version>.zip, holding only what Repère needs to run (the main script and every
-# file it dot-sources, its English text, the Repère.cmd launcher, the icon, the fonts), the changelog and the
+# file it dot-sources, its English text, the Repère.cmd launcher, the icon, the fonts), the changelogs and the
 # licences; not the README and its screenshots, the tests, the tools or the sample data (FakeAD). The version is the
 # main script's $script:RepereVersion. Only files git tracks go in, as they are in the last commit: it refuses when one
 # of them has uncommitted changes, so a zip always matches a commit. The release notes are that version's CHANGELOG.md
@@ -44,6 +44,10 @@ $start = [array]::FindIndex($changelog, [Predicate[string]] { param($line) $line
 if ($start -lt 0) { throw "No '## $version' entry in CHANGELOG.md: add what this version changes first." }
 $end = [array]::FindIndex($changelog, $start + 1, [Predicate[string]] { param($line) $line -match '^## ' })
 if ($end -lt 0) { $end = $changelog.Count }
+# What's new in English is CHANGELOG.en.md's: the same version must be in it.
+if (-not (Select-String -LiteralPath (Join-Path $repo 'CHANGELOG.en.md') -Pattern "^## $([regex]::Escape($version))(\s|$)" -Quiet)) {
+    throw "No '## $version' entry in CHANGELOG.en.md: translate this version's changes first."
+}
 $notes = if ($end -gt $start + 1) { ($changelog[($start + 1)..($end - 1)] -join "`r`n").Trim() }
 if (-not $notes) { throw "CHANGELOG.md's $version entry is empty." }
 
@@ -72,7 +76,7 @@ try {
 finally { [Console]::OutputEncoding = $consoleEncoding }
 if ($LASTEXITCODE) { throw 'git ls-files failed: run this from a clone of the repository.' }
 $scripts = @($mainName) + @(Get-DotSourcedName $mainPath | Select-Object -Unique) | ForEach-Object { "src/$_" }
-$files = @($scripts) + @($tracked | Where-Object { $_ -match '^src/fonts/' -or $_ -in 'Repère.cmd', 'src/Language.en.psd1', 'src/compass.png', 'src/compass.ico', 'LICENSE', 'CHANGELOG.md' })
+$files = @($scripts) + @($tracked | Where-Object { $_ -match '^src/fonts/' -or $_ -in 'Repère.cmd', 'src/Language.en.psd1', 'src/compass.png', 'src/compass.ico', 'LICENSE', 'CHANGELOG.md', 'CHANGELOG.en.md' })
 $files = @($files | ForEach-Object { $_ -replace '\\', '/' } | Select-Object -Unique)
 $missing = @($files | Where-Object { $tracked -notcontains $_ })
 if ($missing) { throw "Not tracked by git: $($missing -join ', ')." }

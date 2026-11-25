@@ -232,3 +232,16 @@ Describe 'Fake AD: its log' {
     }
 
 }
+
+Describe 'Fake AD: computers by a -like filter' {
+    It 'Reads * as any text, \2a as a star and \5c as a backslash' {
+        InModuleScope FakeAD {
+            Test-FakeADLike 'Salle 1 * prêt' '*1*prêt*' | Should -BeTrue
+            Test-FakeADLike 'Salle 1 * prêt' '*\2a*' | Should -BeTrue
+            Test-FakeADLike 'Salle 1 prêt' '*\2a*' | Should -BeFalse
+            Test-FakeADLike 'Salle 1 prêt' '*1\2aprêt*' | Should -BeFalse
+            Test-FakeADLike 'DEMO\jbertrand' '*demo\5cj*' | Should -BeTrue
+            Test-FakeADLike $null '*' | Should -BeFalse
+        }
+    }
+}

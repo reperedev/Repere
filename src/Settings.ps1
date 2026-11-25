@@ -32,7 +32,7 @@ function Read-JsonSetting([string]$Path, [string[]]$Property, [ref]$Unreadable) 
         $saved = $text | ConvertFrom-Json -ErrorAction Stop
     }
     catch {
-        Write-Host "$(Split-Path $Path -Leaf) illisible, valeurs par défaut : $_"
+        Write-Host ((Tr '{0} illisible, valeurs par défaut : {1}') -f (Split-Path $Path -Leaf), $_)
         $script:UnreadableSettings[(Split-Path $Path -Leaf)] = "$_"
         if ($Unreadable) { $Unreadable.Value = $true }
         return
@@ -71,7 +71,7 @@ function Save-JsonSetting([string]$Path, $Setting, [int]$Depth = 2, [switch]$Mer
         Move-Item -LiteralPath "$Path.tmp" -Destination $Path -Force -ErrorAction Stop
     }
     catch {
-        Write-Host "$(Split-Path $Path -Leaf) non enregistré : $_"
+        Write-Host ((Tr '{0} non enregistré : {1}') -f (Split-Path $Path -Leaf), $_)
         Remove-Item -LiteralPath "$Path.tmp" -ErrorAction Ignore
     }
 }

@@ -172,7 +172,7 @@ if ($useFakeAD -and -not (Test-Path -LiteralPath "$PSScriptRoot\FakeAD\FakeAD.ps
     Exit-Repere (Tr "Cet ordinateur n'est pas joint à un domaine : Repère a besoin d'Active Directory.")
 }
 if ($useFakeAD) {
-    Write-Host "AD fictif utilisé (ordinateur hors domaine ou -FakeAD)."
+    Write-Host (Tr 'AD fictif utilisé (ordinateur hors domaine ou -FakeAD).')
     if ($ExtraFakeComputers -gt 0) { $env:REPERE_FAKEAD_EXTRA_COMPUTERS = $ExtraFakeComputers }
     Import-Module "$PSScriptRoot\FakeAD\FakeAD.psm1" -ErrorAction Stop
 }
@@ -233,7 +233,7 @@ if (-not $domainList.Count) {
     }
     catch {
         # Off the network the forest can't be read: offer only the user's domain, whose searches then show the error.
-        Write-Host "Domaines de la forêt non lus: $_"
+        Write-Host ((Tr 'Domaines de la forêt non lus : {0}') -f $_)
         $domainList = @(if ($env:USERDNSDOMAIN) { $env:USERDNSDOMAIN.ToLowerInvariant() } else { $computerSystem.Domain })
     }
 }
@@ -242,7 +242,7 @@ $defaultDomain = $domainList | Where-Object { $_ -eq $env:USERDNSDOMAIN } | Sele
 if (-not $defaultDomain) { $defaultDomain = $domainList[0] }
 # The Domaine list and column only show when there's a choice to make.
 $showDomains = $domainList.Count -gt 1
-Write-Host "Domaines: $($domainList -join ', ')"
+Write-Host ((Tr 'Domaines : {0}') -f ($domainList -join ', '))
 
 # Searches run in background runspaces, so the window stays responsive and can cancel them, and each domain is
 # searched on its own runspace, in parallel (up to 4 at once). The runspaces load the AD module once, in the
@@ -701,7 +701,7 @@ $windowXaml = @'
                           <TextBlock FontWeight="{DynamicResource R.FontWeightStrong}">
                             <TextBlock.Text><MultiBinding StringFormat="{}{0} › {1}"><Binding Path="Domain"/><Binding Path="OUPath"/></MultiBinding></TextBlock.Text>
                           </TextBlock>
-                          <TextBlock Text="{Binding OU}" FontSize="11.5" Margin="0,3,0,0" Opacity="0.75"/>
+                          <TextBlock Text="{Binding DistinguishedName}" FontSize="11.5" Margin="0,3,0,0" Opacity="0.75"/>
                         </StackPanel>
                       </ToolTip>
                     </TextBlock.ToolTip>
@@ -902,10 +902,10 @@ Register-ThemeFollow $win
 # An error in an event handler is said in a toast and in the console, instead of closing the window.
 $win.Dispatcher.Add_UnhandledException({
     $e = $args[1]
-    Write-Host "Erreur : $($e.Exception.Message)"
+    Write-Host ((Tr 'Erreur : {0}') -f $e.Exception.Message)
     $e.Handled = $true
     try { Show-ActionNotice (Tr 'Erreur') "✖ $($e.Exception.Message)" $e.Exception.Message }
-    catch { Write-Host "Erreur : $_" }
+    catch { Write-Host ((Tr 'Erreur : {0}') -f $_) }
 })
 
 if ($useFakeAD) {
@@ -1422,7 +1422,7 @@ if (-not $useFakeAD) {
     $win.Add_ContentRendered({
         $null = $script:win.Dispatcher.BeginInvoke([Action]{
             try { Import-Module ActiveDirectory -Global -ErrorAction Stop }
-            catch { Write-Host "Module ActiveDirectory non chargé : $_" }
+            catch { Write-Host ((Tr 'Module ActiveDirectory non chargé : {0}') -f $_) }
         }, [System.Windows.Threading.DispatcherPriority]::ApplicationIdle)
     })
 }

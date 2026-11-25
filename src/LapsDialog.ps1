@@ -56,7 +56,7 @@ function Get-LapsEntry($Computer) {
     # A computer's LAPS password, and its text as Copier gives it: its name and kind, the account, then the password or
     # why it can't be shown, AD's English errors in French. ReadAs: that text as UI Automation reads the card.
     try {
-        $laps = Get-LapsPassword $Computer.OU $Computer.Domain
+        $laps = Get-LapsPassword $Computer.DistinguishedName $Computer.Domain
         if ($laps.Problem) { $laps.Problem = ConvertTo-FrenchError $laps.Problem }
         if (-not $laps.Kind) {
             $text = (Tr '{0} : aucun mot de passe LAPS') -f $Computer.ComputerName

@@ -84,4 +84,4 @@ The repository also holds what the zip doesn't:
 - `src\FakeAD`: a sample AD to try Repère without a domain (`-FakeAD`, from the repository only);
 - `tests`: the unit tests (Pester) and the UI tests (`Test-RepereUI.ps1`);
 - `tests\Capture-Docs.ps1`: takes this documentation's screenshots again, in French and in English (`-Language en`);
-- `tools\New-RepereRelease.ps1`: builds a release's zip and its notes, taken from the [changelog](../../CHANGELOG.md).
+- `tools\New-RepereRelease.ps1`: builds a release's zip and its notes, taken from the [changelog](../../CHANGELOG.md), in French. The version must also be in [CHANGELOG.en.md](../../CHANGELOG.en.md), which **What's new** shows in English.

@@ -292,7 +292,7 @@ function Start-BitLockerRemoval($State, $Keys) {
             Complete-BitLockerRemoval $write.State $write.Keys $outcome
         }
     }
-    catch { $started = $false; Write-Host "Clés BitLocker non supprimées : $_" }
+    catch { $started = $false; Write-Host ((Tr 'Clés BitLocker non supprimées : {0}') -f $_) }
     if (-not $started) {
         $State.Removing = $false
         Update-BitLockerFooter $State
@@ -359,7 +359,7 @@ function Read-BitLockerRow($Computers) {
     foreach ($computer in $Computers) {
         $computerOrder++
         try {
-            $keys = @(Get-BitLockerKey $computer.OU $computer.Domain)
+            $keys = @(Get-BitLockerKey $computer.DistinguishedName $computer.Domain)
             if (-not $keys.Count) {
                 $missing.Add($computer.ComputerName)
                 continue
@@ -367,7 +367,7 @@ function Read-BitLockerRow($Computers) {
             foreach ($key in $keys) {
                 $rows.Add([pscustomobject]@{
                     ComputerName      = $computer.ComputerName
-                    ComputerDN        = $computer.OU
+                    ComputerDN        = $computer.DistinguishedName
                     ComputerOrder     = $computerOrder
                     Domain            = $computer.Domain
                     When              = $key.When

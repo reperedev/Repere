@@ -23,7 +23,7 @@ BeforeAll {
     function New-GuardRow([string]$Name, [string]$Domain = 'demo.local', [string]$OU = 'Postes') {
         # A row as the grid has it, of what the guard reads.
         $base = ($Domain -split '\.' | ForEach-Object { "DC=$_" }) -join ','
-        [pscustomobject]@{ ComputerName = $Name; Domain = $Domain; OU = "CN=$Name,OU=$OU,$base" }
+        [pscustomobject]@{ ComputerName = $Name; Domain = $Domain; DistinguishedName = "CN=$Name,OU=$OU,$base" }
     }
 
     function Set-Self([string[]]$Names, [string]$DN = '', [string]$Domain = 'demo.local') {
@@ -242,5 +242,19 @@ Describe 'Start-ComputerGuard: the guard read in the background, the window usab
             if ($parent) { $parent.Name } else { '(script)' }
         })
         $callers | Should -Be @('Read-ComputerGuard')
+    }
+}
+
+Describe 'The selection the actions read' {
+    It 'Is never wrapped by @() around the call, which would make it one item: the guard would let every computer through' {
+        # Get-SelectedComputer and Get-PageSelection return their list as one object (, $list): stored in a variable,
+        # it's the list; inside @(), a list of one list.
+        $wrapped = foreach ($path in Get-ChildItem -LiteralPath $script:RepereSource -Filter *.ps1) {
+            $ast = Get-RepereScriptAst $path.FullName
+            $ast.FindAll({ param($node) $node -is [System.Management.Automation.Language.ArrayExpressionAst] -and $node.Extent.Text -match '^@\(\s*(Get-SelectedComputer|Get-PageSelection\s+\S+)\s*\)$' -and
+                    $node.Parent -isnot [System.Management.Automation.Language.IndexExpressionAst] }, $true) |
+                ForEach-Object { "$($path.Name):$($_.Extent.StartLineNumber)" }
+        }
+        $wrapped | Should -BeNullOrEmpty
     }
 }

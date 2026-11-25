@@ -246,7 +246,7 @@ Describe 'Get-ObjectGroup' {
     AfterEach { Clear-TestSession }
 
     It "Lists a computer's direct groups, its primary group and those it is in through others, each in its domain" {
-        $groups = Get-ComputerGroup ([pscustomobject]@{ Domain = 'demo.local'; OU = 'CN=ORD-01,OU=Postes,DC=demo,DC=local' })
+        $groups = Get-ComputerGroup ([pscustomobject]@{ Domain = 'demo.local'; DistinguishedName = 'CN=ORD-01,OU=Postes,DC=demo,DC=local' })
         Get-GroupText $groups | Should -Be @(
             'Directe: GG-Logiciel-Office (demo.local)', 'Directe: GG-Postes-Accueil (demo.local)', 'Directe: Liste-Inventaire (demo.local)'
             'Principale: Ordinateurs du domaine (demo.local)'
@@ -292,7 +292,7 @@ Describe 'Get-ObjectGroup' {
     }
 
     It "Lists the groups of another domain that list it, once, as direct" {
-        $groups = Get-ComputerGroup ([pscustomobject]@{ Domain = 'demo.local'; OU = 'CN=ORD-04,OU=Communs-Kiosques,OU=Kiosques,DC=demo,DC=local' })
+        $groups = Get-ComputerGroup ([pscustomobject]@{ Domain = 'demo.local'; DistinguishedName = 'CN=ORD-04,OU=Communs-Kiosques,OU=Kiosques,DC=demo,DC=local' })
         # GU-Postes-Nord is in its tokenGroups too: it isn't listed again as inherited.
         Get-GroupText $groups | Should -Be @(
             'Directe: GG-GPO-Kiosques (demo.local)', 'Directe: GU-Postes-Nord (nord.demo.local)', 'Principale: Ordinateurs du domaine (demo.local)'

@@ -20,8 +20,14 @@ param(
 )
 
 # The text is in Repère's language: Tr (Language.ps1) is the main script's, or given to the reading's runspace
-# (SpecsWindow.ps1). Run on its own, without it, the text stays in French. Not a function statement: dot-sourced with
-# the main script, this file would define Tr a second time.
+# (SpecsWindow.ps1). Run on its own, it's Language.ps1's beside it, in the language chosen in Paramètres or else
+# Windows's, nothing being saved; copied without it, in French. Not a function statement: dot-sourced with the main
+# script, this file would define Tr a second time.
+if ($MyInvocation.InvocationName -ne '.' -and (Test-Path -LiteralPath (Join-Path $PSScriptRoot 'Language.ps1')) -and (Test-Path -LiteralPath (Join-Path $PSScriptRoot 'Settings.ps1'))) {
+    . (Join-Path $PSScriptRoot 'Settings.ps1')
+    . (Join-Path $PSScriptRoot 'Language.ps1')
+    Initialize-Language '' -ReadOnly
+}
 if (-not (Get-Command Tr -CommandType Function -ErrorAction Ignore)) { $null = New-Item -Path function:Tr -Value { param([string]$Text) $Text } }
 
 function Test-PCNameValid([string]$Name) {

@@ -21,6 +21,8 @@ BeforeAll {
         # Language.en.psd1's own mistakes, for whoever edits it, before any language is loaded.
         "Language.ps1|`$Path : chaque entrée est @('français', 'English'), pas : `$(`$pair -join ' | ')"
         'Language.ps1|$Path : « $($pair[0]) » y est deux fois.'
+        # Said when the English can't be loaded.
+        'Language.ps1|Anglais indisponible, Repère reste en français (English unavailable) : $_'
         # Exit-Repere's title and the startup trap's text when Settings.ps1 or Language.ps1 itself didn't load: no Tr
         # yet. Through Tr otherwise.
         'Repere - Recherche PC AD par description.ps1|Repère'
@@ -230,6 +232,12 @@ Describe 'Initialize-Language: the language of a run' {
         $script:LanguageChoice | Should -BeExactly 'fr'
     }
 
+    It '-ReadOnly: a first run saves nothing (PCSpecs.ps1 run on its own)' {
+        Initialize-Language '' -ReadOnly
+        $script:UILanguage | Should -BeExactly (Resolve-Language '')
+        Test-Path -LiteralPath $script:LanguageSettingPath | Should -BeFalse
+    }
+
     It '-Language wins over the choice saved, for this run only' {
         '{"Language":"fr"}' | Set-Content -LiteralPath $script:LanguageSettingPath -Encoding utf8
         Initialize-Language 'en'
@@ -256,5 +264,34 @@ Describe 'Initialize-Language: the language of a run' {
 Describe 'Every text shown has its English' {
     It '<Name>' -ForEach $script:ShownFiles {
         Find-UntranslatedText (Get-ParsedScript $Path) $script:Table $script:FrenchKept | Should -BeNullOrEmpty
+    }
+}
+
+Describe 'PCSpecs.ps1 run on its own' {
+    It 'Is in the language chosen in Paramètres, and saves nothing: <Language>' -ForEach @(
+        @{ Language = 'en'; Expected = 'Specifications of'; Other = 'Caractéristiques de' }
+        @{ Language = 'fr'; Expected = 'Caractéristiques de'; Other = 'Specifications of' }
+    ) {
+        $saved = $env:APPDATA
+        $env:APPDATA = Join-Path ([System.IO.Path]::GetTempPath()) "repere-pcspecs-appdata-$PID"
+        $encoding = [Console]::OutputEncoding
+        try {
+            $path = Join-Path $env:APPDATA 'Repere\parametres.json'
+            $null = New-Item -ItemType Directory -Force -Path (Split-Path $path)
+            $json = "{`"Language`":`"$Language`"}"
+            Set-Content -LiteralPath $path -Value $json -Encoding utf8
+            [Console]::OutputEncoding = [System.Text.UTF8Encoding]::new($false)
+            # A name no computer can have: refused without a query.
+            $command = "[Console]::OutputEncoding = [System.Text.UTF8Encoding]::new(`$false); & '$((Join-Path $script:RepereSource 'PCSpecs.ps1').Replace("'", "''"))' 'pas valide!' -AsText"
+            $text = (& (Get-Process -Id $PID).Path -NoProfile -NonInteractive -Command $command) -join "`n"
+            $text | Should -Match $Expected
+            $text | Should -Not -Match $Other
+            (Get-Content -LiteralPath $path -Raw).Trim() | Should -BeExactly $json
+        }
+        finally {
+            [Console]::OutputEncoding = $encoding
+            Remove-Item -LiteralPath $env:APPDATA -Recurse -Force -ErrorAction SilentlyContinue
+            $env:APPDATA = $saved
+        }
     }
 }

@@ -112,7 +112,7 @@ function Find-UntranslatedText($File, $Table, [string[]]$Allowed = @()) {
     # The French text a file shows that Language.en.psd1 ($Table) can't put in English: a Tr text it has no entry for, Tr
     # given a string with variables in it (a format string is how: (Tr 'a {0}') -f $x), a window's XAML text it has no
     # entry for (Get-XamlText, Language.ps1), and a string with a French letter (é, à, ç, «, …) given neither to Tr nor
-    # in XAML. Not Write-Host's text, which goes to the console. $Allowed: « File.ps1|text » strings left in French on
+    # in XAML. Not Write-Verbose's and Write-Debug's text, for whoever debugs. $Allowed: « File.ps1|text » strings left in French on
     # purpose.
     $trArguments = [System.Collections.Generic.HashSet[object]]::new()
     foreach ($call in $File.Ast.FindAll({ param($node) $node -is [System.Management.Automation.Language.CommandAst] -and $node.GetCommandName() -eq 'Tr' }, $true)) {
@@ -144,7 +144,7 @@ function Find-UntranslatedText($File, $Table, [string[]]$Allowed = @()) {
         if ($string.Value -notmatch '[àâçéèêëîïôûùüÿœÀÂÇÉÈÊËÎÏÔÛÙÜŒ«»…]') { continue }
         $command = $string.Parent
         while ($command -and $command -isnot [System.Management.Automation.Language.CommandAst] -and $command -isnot [System.Management.Automation.Language.StatementBlockAst]) { $command = $command.Parent }
-        if ($command -is [System.Management.Automation.Language.CommandAst] -and $command.GetCommandName() -in 'Write-Host', 'Write-Verbose', 'Write-Debug') { continue }
+        if ($command -is [System.Management.Automation.Language.CommandAst] -and $command.GetCommandName() -in 'Write-Verbose', 'Write-Debug') { continue }
         if ("$($File.Name)|$($string.Value)" -in $Allowed) { continue }
         "${line}: French text outside Tr « $($string.Value) »"
     }

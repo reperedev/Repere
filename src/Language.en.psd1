@@ -786,6 +786,7 @@
         @('noms', 'names'),
         @('courriels', 'emails'),
         @('Exporter les utilisateurs', 'Export users'),
+        @('Repere_ordinateurs{0}_{1:yyyy-MM-dd}.csv', 'Repere_computers{0}_{1:yyyy-MM-dd}.csv'),
         @('Repere_utilisateurs_{0:yyyy-MM-dd}.csv', 'Repere_users_{0:yyyy-MM-dd}.csv'),
         @('Expiration du mot de passe', 'Password expiration'),
         @('Identifiant', 'Logon name'),
@@ -1490,6 +1491,26 @@
         @('Test en cours…', 'Testing…'),
         @('Le site {0} répond.', 'Site {0} is answering.'),
         @('Entrez un site et son serveur pour les tester.', 'Enter a site and its server to test them.'),
-        @('SCCM désactivé : « Prochain nom… » ne vérifiera que dans l''AD.', 'SCCM turned off: « Next name… » will only check AD.')
+        @('SCCM désactivé : « Prochain nom… » ne vérifiera que dans l''AD.', 'SCCM turned off: « Next name… » will only check AD.'),
+        # Said in the console (Write-Host), by every file
+        @('Lecture en arrière-plan : {0}', 'Background read: {0}'),
+        @('Clés BitLocker non supprimées : {0}', 'BitLocker keys not deleted: {0}'),
+        @('Nouveautés non affichées : {0}', 'What''s new not shown: {0}'),
+        @('Compte de cet ordinateur non lu dans AD, reconnu par son DN et son nom : {0}', 'This computer''s account not read from AD, recognized by its DN and name: {0}'),
+        @('Vérifier en ligne : {0}', 'Check online: {0}'),
+        @('Activer WinRM ({0}) : {1}, mais WinRM répond.', 'Turn on WinRM ({0}): {1}, but WinRM is answering.'),
+        @('Erreur de recherche AD ({0}) : {1}', 'AD search error ({0}): {1}'),
+        @('Erreur de recherche : {0}', 'Search error: {0}'),
+        @('Colonnes ignorées : {0}', 'Columns ignored: {0}'),
+        @('AD fictif utilisé (ordinateur hors domaine ou -FakeAD).', 'Sample AD in use (computer not on a domain, or -FakeAD).'),
+        @('Domaines de la forêt non lus : {0}', 'The forest''s domains not read: {0}'),
+        @('Domaines : {0}', 'Domains: {0}'),
+        @('Erreur : {0}', 'Error: {0}'),
+        @('Module ActiveDirectory non chargé : {0}', 'ActiveDirectory module not loaded: {0}'),
+        @('Colonnes ignorées ({0}) : {1}', 'Columns ignored ({0}): {1}'),
+        @('{0} illisible, valeurs par défaut : {1}', '{0} unreadable, defaults used: {1}'),
+        @('{0} non enregistré : {1}', '{0} not saved: {1}'),
+        @('Thème ignoré : {0}', 'Theme ignored: {0}'),
+        @('motdepasse.json : mot de passe par défaut illisible ici : {0}', 'motdepasse.json: default password unreadable here: {0}')
     )
 }

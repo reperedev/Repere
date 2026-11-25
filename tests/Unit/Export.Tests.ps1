@@ -6,10 +6,12 @@
 
 BeforeAll {
     . (Join-Path $PSScriptRoot 'LoadRepere.ps1')
-    # ComputerPage.ps1 loads only with the window: Get-ComputerExportField alone, from its source.
+    # ComputerPage.ps1 loads only with the window: these functions alone, from its source.
     $computerPage = Get-RepereScriptAst (Join-Path $script:RepereSource 'ComputerPage.ps1')
-    $definition = $computerPage.Find({ param($node) $node -is [System.Management.Automation.Language.FunctionDefinitionAst] -and $node.Name -eq 'Get-ComputerExportField' }, $true)
-    . ([scriptblock]::Create($definition.Extent.Text))
+    foreach ($name in 'Get-ComputerExportField', 'Get-ComputerExportName') {
+        $definition = $computerPage.Find({ param($node) $node -is [System.Management.Automation.Language.FunctionDefinitionAst] -and $node.Name -eq $name }, $true)
+        . ([scriptblock]::Create($definition.Extent.Text))
+    }
 
     function New-TestGrid([string[]]$Columns, [string[]]$Hidden = @(), [string]$Name = 'grid') {
         # A grid with these columns, each « key=Header », in this order; $Hidden collapsed.
@@ -31,7 +33,7 @@ BeforeAll {
         $row = [ordered]@{
             ComputerName = 'ORD-02'; Description = 'Salle 1'; Disabled = $null; IsOn = $true; LastLogon = '2026-11-20 08:15'; LastLogonAgo = 'il y a 3 jours'
             OSShort = 'Win 11 24H2'; OSFull = 'Windows 11 Professionnel 10.0 (26100)'; OSBuild = 26100; Domain = 'demo.local'
-            ShortPath = 'demo.local/Postes/Communs'; OUPath = 'Postes › Communs'; OU = 'CN=ORD-02,OU=Communs,OU=Postes,DC=demo,DC=local'
+            ShortPath = 'demo.local/Postes/Communs'; OUPath = 'Postes › Communs'; DistinguishedName = 'CN=ORD-02,OU=Communs,OU=Postes,DC=demo,DC=local'
             Online = $null; OnlineLabel = $null; OnlineAddress = $null
         }
         foreach ($key in $Values.Keys) { $row[$key] = $Values[$key] }
@@ -86,9 +88,24 @@ Describe 'The computers'' Exporter and Copier les lignes' {
 
     It 'Copies the same columns, a tab between them, without the header, a formula kept as text' {
         $grid = New-TestGrid $script:computerColumns -Hidden 'Disabled', 'LastLogon', 'OSBuild', 'Domain', 'ShortPath', 'Online'
-        $rows = (New-ComputerRow), (New-ComputerRow @{ ComputerName = 'ORD-05'; Description = '=HYPERLINK("x")'; OU = 'CN=ORD-05,DC=demo,DC=local' })
+        $rows = (New-ComputerRow), (New-ComputerRow @{ ComputerName = 'ORD-05'; Description = '=HYPERLINK("x")'; DistinguishedName = 'CN=ORD-05,DC=demo,DC=local' })
         Get-RowClipboardText $rows (Get-ComputerExportField $grid.Columns) |
             Should -BeExactly ("ORD-02`tSalle 1`tCN=ORD-02,OU=Communs,OU=Postes,DC=demo,DC=local" + [Environment]::NewLine + "ORD-05`t'=HYPERLINK(`"x`")`tCN=ORD-05,DC=demo,DC=local")
+    }
+}
+
+Describe 'Get-ComputerExportName: the file name Exporter proposes' {
+    AfterEach { [System.AppDomain]::CurrentDomain.SetData('Repere.TextTable', $null) }
+
+    It '<Case>' -ForEach @(
+        @{ Case = 'One domain searched'; Domains = @('demo.local'); Language = 'fr'; Expected = 'Repere_ordinateurs_demo.local_2026-11-24.csv' }
+        @{ Case = 'One domain searched, in English'; Domains = @('NORD.demo.local'); Language = 'en'; Expected = 'Repere_computers_nord.demo.local_2026-11-24.csv' }
+        @{ Case = 'Every domain, without the list''s text'; Domains = @('demo.local', 'nord.demo.local'); Language = 'fr'; Expected = 'Repere_ordinateurs_2026-11-24.csv' }
+        @{ Case = 'Every domain, in English'; Domains = @('demo.local', 'nord.demo.local'); Language = 'en'; Expected = 'Repere_computers_2026-11-24.csv' }
+    ) {
+        if ($Language -eq 'en') { [System.AppDomain]::CurrentDomain.SetData('Repere.TextTable', (Read-TextTable (Join-Path $script:RepereSource 'Language.en.psd1'))) }
+        $results = @{ LastSearch = @{ Domains = $Domains } }
+        Get-ComputerExportName ([datetime]'2026-11-24') | Should -BeExactly $Expected
     }
 }
 

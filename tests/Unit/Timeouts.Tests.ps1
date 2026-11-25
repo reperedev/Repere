@@ -103,6 +103,42 @@ Describe 'Start-BackgroundRead: a time limit for a DC that stops answering' {
         $done.TimedOut | Should -BeFalse
     }
 
+    It 'Ends a read started from a window its OnDone opened, while that window is open' {
+        # ShowDialog's loop, as a dispatcher frame; the window's thread ticks the timer.
+        $state = @{ Frame = [System.Windows.Threading.DispatcherFrame]::new(); Inner = [System.Windows.Threading.DispatcherFrame]::new(); Read = $null; InTime = $null }
+        $later = {
+            # Gives up on a frame after 5 seconds: « not in time ».
+            param($frame)
+            $timer = [System.Windows.Threading.DispatcherTimer]::new()
+            $timer.Interval = [timespan]::FromSeconds(5)
+            $timer.Tag = $frame
+            $timer.Add_Tick({ param($timer) $timer.Stop(); $timer.Tag.Continue = $false })
+            $timer.Start()
+            $timer
+        }
+        $script:NestedRead = $state
+        $script:NestedLimit = $later
+        Start-BackgroundRead -Command 'Get-QuickRead' -OnDone {
+            $limit = & $script:NestedLimit $script:NestedRead.Inner
+            Start-BackgroundRead -Command 'Get-QuickRead' -OnDone {
+                param($context, $read)
+                $script:NestedRead.Read = $read
+                $script:NestedRead.Inner.Continue = $false
+            }
+            [System.Windows.Threading.Dispatcher]::PushFrame($script:NestedRead.Inner)
+            $limit.Stop()
+            $script:NestedRead.InTime = $null -ne $script:NestedRead.Read
+            $script:NestedRead.Frame.Continue = $false
+        }
+        $limit = & $later $state.Frame
+        $limit.Interval = [timespan]::FromSeconds(10)
+        [System.Windows.Threading.Dispatcher]::PushFrame($state.Frame)
+        $limit.Stop()
+        $script:BackgroundReadTimer.Stop()
+        $state.InTime | Should -BeTrue
+        $state.Read | Should -BeExactly 'lu'
+    }
+
     It 'Counts from when the read starts on its runspace, and never with a limit of 0' {
         $handle = [pscustomobject]@{ IsCompleted = $false }
         $now = [datetime]::UtcNow

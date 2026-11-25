@@ -127,7 +127,7 @@ Describe 'Get-ComputerDetailSection and its chips' {
 Describe 'Sync-ComputerDetailRow' {
     It 'brings the row the window acts on up to what was read' {
         $detail = Read-TestComputer 'ORD-02'
-        $copy = [pscustomobject]@{ ComputerName = 'ORD-02'; OU = $detail.Row.DistinguishedName; Description = 'ancienne'; IsOn = $false; Disabled = 'Désactivé' }
+        $copy = [pscustomobject]@{ ComputerName = 'ORD-02'; DistinguishedName = $detail.Row.DistinguishedName; Description = 'ancienne'; IsOn = $false; Disabled = 'Désactivé' }
         $detail.Row.Computer = $copy
         Sync-ComputerDetailRow @{ Row = $detail.Row; Detail = $detail }
         $copy.Description | Should -BeExactly ([string]$detail.Computer.Description)

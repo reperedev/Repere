@@ -99,7 +99,7 @@ Describe 'Add-SelectionGroupMember, with the fake AD' {
 
     It 'Puts computers in a group, by their DN' {
         $rows = Get-ADComputer -Server 'demo.local' -Filter "Name -like 'ORD-0*'" | Where-Object Name -in 'ORD-01', 'ORD-02' | Sort-Object Name |
-            ForEach-Object { [pscustomobject]@{ ComputerName = $_.Name; OU = $_.DistinguishedName; Domain = 'demo.local' } }
+            ForEach-Object { [pscustomobject]@{ ComputerName = $_.Name; DistinguishedName = $_.DistinguishedName; Domain = 'demo.local' } }
         $lines = @(Add-SelectionGroupMember @(Get-TestGroupItem 'GG-Postes-Accueil') @(ConvertTo-GroupMember $rows 'Computer'))
         $lines | Should -Be @('✔ ORD-01 : déjà dans GG-Postes-Accueil', '✔ ORD-02 : ajouté à GG-Postes-Accueil')
     }
@@ -144,7 +144,7 @@ Describe 'Read-SelectionDirectGroup and Remove-SelectionGroupMember, with the fa
     It 'Asks for 100 objects at most per search' {
         Import-RepereFakeAD -ExtraComputers 150
         Clear-FakeADLog
-        $rows = Get-ADComputer -Server 'demo.local' -Filter "Name -like 'PC-*'" | ForEach-Object { [pscustomobject]@{ ComputerName = $_.Name; OU = $_.DistinguishedName; Domain = 'demo.local' } }
+        $rows = Get-ADComputer -Server 'demo.local' -Filter "Name -like 'PC-*'" | ForEach-Object { [pscustomobject]@{ ComputerName = $_.Name; DistinguishedName = $_.DistinguishedName; Domain = 'demo.local' } }
         @($rows).Count | Should -Be 150
         $read = Read-SelectionDirectGroup @(ConvertTo-GroupMember $rows 'Computer')
         $read.Unread | Should -BeNullOrEmpty

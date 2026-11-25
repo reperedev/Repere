@@ -5,8 +5,12 @@
 # Dot-sourced by the main script, after SettingsWindow.ps1.
 
 $script:ChangelogPath = Join-Path (Split-Path $PSScriptRoot) 'CHANGELOG.md'
+# In English, from 0.15.1 on: the same versions, sections and points (tests\Unit\Changelog.Tests.ps1 counts them).
+$script:ChangelogEnglishPath = Join-Path (Split-Path $PSScriptRoot) 'CHANGELOG.en.md'
 $script:ChangelogSettingPath = Get-SettingPath 'parametres.json'
 $script:ChangelogReleaseUrl = 'https://github.com/reperedev/Repere/releases/tag/v{0}'
+# In English: the release's notes are in French only.
+$script:ChangelogEnglishUrl = 'https://github.com/reperedev/Repere/blob/v{0}/CHANGELOG.en.md'
 # The window open (Show-ChangelogWindow), if one is; its list, its column of sections (Add-ChangelogNav) and the
 # section each of its items goes to. ChangelogJump: a section chosen is scrolling, which leaves it chosen.
 # ChangelogSync: the scroll is choosing the section read, which doesn't scroll.
@@ -17,7 +21,7 @@ $script:ChangelogSections = [System.Collections.Generic.List[object]]::new()
 $script:ChangelogJump = $false
 $script:ChangelogSync = $false
 # A section's icon, its area's in the main window; several areas (« Utilisateurs et Groupes »), layers.
-$script:ChangelogAreaIcons = [ordered]@{ '^Ordinateurs$' = 'monitor'; '^Utilisateurs$' = 'user'; '^Groupes$' = 'users'; '^Param.tres$' = 'settings' }
+$script:ChangelogAreaIcons = [ordered]@{ '^(Ordinateurs|Computers)$' = 'monitor'; '^(Utilisateurs|Users)$' = 'user'; '^(Groupes|Groups)$' = 'users'; '^(Param.tres|Settings)$' = 'settings' }
 
 $script:ChangelogXaml = @'
 <DockPanel xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation" xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
@@ -84,6 +88,14 @@ function Get-ChangelogEntry([string]$Path, [string]$Version) {
     @(Read-ChangelogEntry $Path) | Where-Object Version -EQ ([version]$Version) | Select-Object -First 1
 }
 
+function Get-ShownChangelogEntry([string]$Version) {
+    # $Version's entry as the window shows it, in this run's language, its InEnglish saying which: in English,
+    # CHANGELOG.en.md's, or CHANGELOG.md's when it has none (an older version, a file left out); $null without either.
+    $english = if ($script:UILanguage -eq 'en') { Get-ChangelogEntry $script:ChangelogEnglishPath $Version }
+    $entry = if ($english) { $english } else { Get-ChangelogEntry $script:ChangelogPath $Version }
+    if ($entry) { $entry | Add-Member InEnglish ([bool]$english) -PassThru -Force }
+}
+
 function Get-ChangelogSeen($Saved) {
     # parametres.json's SeenVersion ($Saved, $null without the file) as a version: $null without one, or with one that
     # doesn't read as x.y.z (edited by hand, too big for a version).
@@ -103,28 +115,30 @@ function Test-ChangelogStart($Saved, [bool]$HadSettings, [string]$Current) {
 
 # The first comma after these doesn't end a headline: what comes before it only sets the scene (« Apr\u00e8s une action
 # réussie sur plusieurs utilisateurs, la notification… »). In \u: the code is ASCII.
-$script:ChangelogSceneWord = '^(Apr\u00e8s|Avant|Quand|Lorsque|Si|D\u00e8s|Depuis|Pendant|Sans|Avec|Dans|Pour|Hors|Au|Aux|En|Sur|Sous)\b'
+$script:ChangelogSceneWord = '^(Apr\u00e8s|Avant|Quand|Lorsque|Si|D\u00e8s|Depuis|Pendant|Sans|Avec|Dans|Pour|Hors|Au|Aux|En|Sur|Sous|After|Before|When|If|Once|Since|During|Without|With|In|For|Outside|On|At)\b'
 
 function Get-ChangelogWordCount([string]$Text) { @(($Text -replace '\*\*|`') -split '\s+' | Where-Object { $_ }).Count }
 
 function Test-ChangelogLabel([string]$Head) {
     # Whether $Head only names what the point is about, so a « : » after it doesn't end the headline: a name in bold of 3
     # words at most (« **Propriétés** »), names in bold one after the other (« **Propriétés**, **Caractéristiques** et
-    # **Comparer les groupes** »), or 2 words at most (« Actions »).
+    # **Comparer les groupes** »), or 2 words at most (« Actions »). In French or in English.
     $bolds = [regex]::Matches($Head, '\*\*[^*]+\*\*').Count
     $rest = $Head -replace '\*\*[^*]+\*\*'
-    if ($bolds -ge 2) { return $rest -match '^(\s*(,|et)\s*)*$' }
+    if ($bolds -ge 2) { return $rest -match '^(\s*(,|et|and)\s*)*$' }
     if ($bolds -eq 1) { return -not $rest.Trim() -and (Get-ChangelogWordCount $Head) -le 3 }
     (Get-ChangelogWordCount $Head) -le 2
 }
 
 function Get-ChangelogHeadline([string]$Text) {
     # A point's headline, kept short: the sentence in bold that starts it (6 words or more), else its first sentence, up
-    # to « . », « : » or « ; », or a comma once it has 8 words; never inside bold, « », ( ) or `code`. A « : » past a
+    # to « . », « : » or « ; », or a comma once it has 8 words; never inside bold, « », " ", ( ) or `code`. English has
+    # no space before its colon and semicolon. A « : » past a
     # name that starts it (Test-ChangelogLabel) doesn't end it: « **Propriétés** : au-delà de 10 groupes… ». Not its asides
     # in ( ), which are detail, unless they're all it says of its name (« **Utilisateurs connectés…** (clic droit) »).
     if ($Text -match '^\*\*([^*]+)\*\*' -and @($Matches[1].Trim() -split '\s+').Count -ge 6) { return $Matches[0] }
     $quote = 0
+    $straight = $false
     $paren = 0
     $code = $false
     $bold = $false
@@ -141,6 +155,7 @@ function Get-ChangelogHeadline([string]$Text) {
         if ($char -eq '*' -and $next -eq '*') { $bold = -not $bold; $i++; continue }
         if ($char -eq [char]0xAB) { $quote++; continue }  # «
         if ($char -eq [char]0xBB) { $quote--; continue }  # »
+        if ($char -eq '"') { if ($straight) { $quote-- } else { $quote++ }; $straight = -not $straight; continue }
         if ($char -eq '(') {
             if ($paren -eq 0 -and -not $bold -and $quote -le 0) { $aside = $i }
             $paren++
@@ -152,7 +167,7 @@ function Get-ChangelogHeadline([string]$Text) {
             continue
         }
         if ($bold -or $quote -gt 0 -or $paren -gt 0 -or $next -ne ' ') { continue }
-        $end = $char -eq '.' -or ($char -in ':', ';' -and $i -gt 0 -and $Text[$i - 1] -eq ' ')
+        $end = $char -in '.', ':', ';'
         if (-not $end -and $char -ne ',') { continue }
         $head = Remove-ChangelogAside $Text.Substring(0, $i).TrimEnd() $asides
         if ($end -and -not ($char -eq ':' -and (Test-ChangelogLabel $head))) { $cut = $i; break }
@@ -174,7 +189,10 @@ function Remove-ChangelogAside([string]$Head, $Asides) {
     $text = [System.Text.StringBuilder]::new()
     $from = 0
     foreach ($aside in $whole) {
-        $null = $text.Append($Head, $from, $aside[0] - $from)
+        $before = $Head.Substring($from, $aside[0] - $from)
+        # English's colon or semicolon, right after the aside, then follows the word before it.
+        if ($aside[1] + 1 -lt $Head.Length -and $Head[$aside[1] + 1] -in ':', ';') { $before = $before.TrimEnd() }
+        $null = $text.Append($before)
         $from = $aside[1] + 1
     }
     $null = $text.Append($Head, $from, $Head.Length - $from)
@@ -189,6 +207,7 @@ function Get-ChangelogSummary($Entry) {
     $section = $null
     $sections = [System.Collections.Generic.List[object]]::new()
     $named = -1
+    $colon = ' :'
     foreach ($line in $Entry.Lines) {
         if ($line -match '^###\s+(.+)$') {
             $all = [System.Collections.Generic.List[string]]::new()
@@ -203,10 +222,12 @@ function Get-ChangelogSummary($Entry) {
             }
             $headline = Get-ChangelogHeadline $text
             $all.Add($headline)
-            $named = if ($text -match '\s:\s*$' -and (Test-ChangelogLabel $headline)) { $all.Count - 1 } else { -1 }
+            $named = if ($text -match '(\s?:)\s*$' -and (Test-ChangelogLabel $headline)) { $all.Count - 1 } else { -1 }
+            # « : » as it's written: with a space before it in French, without in English.
+            if ($named -ge 0) { $colon = $Matches[1] }
         }
         elseif ($named -ge 0 -and $line -match '^\s+[-*]\s+(.+)$') {
-            $all[$named] = "$($all[$named]) : $(Get-ChangelogHeadline $Matches[1])"
+            $all[$named] = "$($all[$named])$colon $(Get-ChangelogHeadline $Matches[1])"
             $named = -1
         }
     }
@@ -216,7 +237,7 @@ function Get-ChangelogSummary($Entry) {
 function Get-ChangelogArea([string]$Name) {
     # The parts of section $Name (« Ordinateurs, Utilisateurs et Groupes »), each with its area's Icon, $null when it
     # isn't one (ChangelogAreaIcons).
-    foreach ($part in @(($Name -replace '\*\*|`') -split ',\s*|\s+et\s+' | Where-Object { $_ })) {
+    foreach ($part in @(($Name -replace '\*\*|`') -split ',\s*|\s+(?:et|and)\s+' | Where-Object { $_ })) {
         $icon = $null
         foreach ($area in $script:ChangelogAreaIcons.Keys) { if ($part -match $area) { $icon = $script:ChangelogAreaIcons[$area]; break } }
         [pscustomobject]@{ Part = $part; Icon = $icon }
@@ -224,10 +245,10 @@ function Get-ChangelogArea([string]$Name) {
 }
 
 function Get-ChangelogSectionName([string]$Name) {
-    # Section $Name as the window names it: « Général » for one about 3 areas or more, whose long name would wrap in the
+    # Section $Name as the window names it: « Général » (General) for one about 3 areas or more, whose long name would wrap in the
     # column; else as CHANGELOG.md names it.
     $parts = @(Get-ChangelogArea $Name)
-    if ($parts.Count -ge 3 -and -not ($parts | Where-Object { -not $_.Icon })) { return "G$([char]0xE9)n$([char]0xE9)ral" }
+    if ($parts.Count -ge 3 -and -not ($parts | Where-Object { -not $_.Icon })) { return Tr 'Général' }
     $Name
 }
 
@@ -285,8 +306,8 @@ function Get-ChangelogIcon([string]$Name) {
     if ($known.Count -gt 1 -and $known.Count -eq $parts.Count) { return 'layers' }
     if ($known) { return $known[0] }
     if ($Name -match 'curit') { return 'lock' }
-    if ($Name -match '^Correction') { return 'check' }
-    if ($Name -match 'contr.leurs') { return 'server' }
+    if ($Name -match '^(Correction|Fix)') { return 'check' }
+    if ($Name -match 'contr.leurs|controllers') { return 'server' }
     'list'
 }
 
@@ -438,9 +459,9 @@ function Show-ChangelogWindow($Entry) {
     Set-WindowChrome $window -TitleBar $root.FindName('title_bar') -ButtonHost $root.FindName('caption_buttons')
     Register-WindowHeightCap $window
     Register-OwnerFocus $window
-    # The version and its date. The notes are in French only.
-    $root.FindName('changelog_subtitle').Text = if ($script:UILanguage -eq 'en') { (Tr 'Repère {0}, journal en français') -f $Entry.Heading } else { (Tr 'Repère {0}') -f $Entry.Heading }
-    $script:ChangelogDetailUrl = $script:ChangelogReleaseUrl -f $Entry.Version
+    # The version and its date. In English, an older version's notes are in French only.
+    $root.FindName('changelog_subtitle').Text = if ($script:UILanguage -eq 'en' -and -not $Entry.InEnglish) { (Tr 'Repère {0}, journal en français') -f $Entry.Heading } else { (Tr 'Repère {0}') -f $Entry.Heading }
+    $script:ChangelogDetailUrl = $(if ($Entry.InEnglish) { $script:ChangelogEnglishUrl } else { $script:ChangelogReleaseUrl }) -f $Entry.Version
     $root.FindName('changelog_detail').Add_Click({ Start-Process $script:ChangelogDetailUrl })
     # Fermer and Échap close it as its X does: a window that isn't modal has no DialogResult to close it.
     $root.FindName('dialog_cancel').Add_Click({ param($button) [System.Windows.Window]::GetWindow($button).Close() })
@@ -469,12 +490,12 @@ function Start-Changelog {
             Save-JsonSetting $script:ChangelogSettingPath ([ordered]@{ SeenVersion = $script:RepereVersion }) -Merge
         }
         if (-not $show) { return }
-        $script:ChangelogStartEntry = Get-ChangelogEntry $script:ChangelogPath $script:RepereVersion
+        $script:ChangelogStartEntry = Get-ShownChangelogEntry $script:RepereVersion
         if (-not $script:ChangelogStartEntry) { return }
         $script:win.Add_ContentRendered({
             $null = $script:win.Dispatcher.BeginInvoke([Action]{ Show-ChangelogWindow $script:ChangelogStartEntry },
                 [System.Windows.Threading.DispatcherPriority]::ApplicationIdle)
         })
     }
-    catch { Write-Host "Nouveautés non affichées : $_" }
+    catch { Write-Host ((Tr 'Nouveautés non affichées : {0}') -f $_) }
 }

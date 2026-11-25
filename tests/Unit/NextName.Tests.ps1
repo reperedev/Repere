@@ -558,3 +558,14 @@ Export-ModuleMember -Function Get-PSDrive, New-PSDrive
         $check.Reason | Should -BeExactly $Reason
     }
 }
+
+Describe 'A read that calls Get-SccmCheck' {
+    It 'Is given Get-ErrorKind too, which a runspace does not have' {
+        foreach ($file in 'NextName.ps1', 'SettingsWindow.ps1') {
+            $ast = Get-RepereScriptAst (Join-Path $script:RepereSource $file)
+            $reads = @($ast.FindAll({ param($node) $node -is [System.Management.Automation.Language.CommandAst] -and $node.GetCommandName() -eq 'Start-BackgroundRead' -and $node.Extent.Text -match "'Get-SccmCheck'" }, $true))
+            $reads.Count | Should -Be 1 -Because $file
+            $reads[0].Extent.Text | Should -Match "'Get-ErrorKind'"
+        }
+    }
+}

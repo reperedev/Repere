@@ -11,7 +11,7 @@ function ConvertTo-GroupMember($Rows, [string]$Kind) {
     # The rows selected, as the group changes take them: Label (the login, or the computer's name, in the report), Name
     # (in a heading), Domain, DistinguishedName, Kind ('User' or 'Computer'), and the Row.
     foreach ($row in $Rows) {
-        if ($Kind -eq 'Computer') { @{ Label = $row.ComputerName; Name = $row.ComputerName; Domain = $row.Domain; DistinguishedName = $row.OU; Kind = $Kind; Row = $row } }
+        if ($Kind -eq 'Computer') { @{ Label = $row.ComputerName; Name = $row.ComputerName; Domain = $row.Domain; DistinguishedName = $row.DistinguishedName; Kind = $Kind; Row = $row } }
         else { @{ Label = $row.Login; Name = $row.Name; Domain = $row.Domain; DistinguishedName = $row.DistinguishedName; Kind = $Kind; Row = $row } }
     }
 }

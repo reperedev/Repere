@@ -80,7 +80,7 @@ function Read-PasswordSetting {
             $secure = ConvertTo-SecureString -String ([string]$saved.Default) -ErrorAction Stop
             $setting.Default = [System.Net.NetworkCredential]::new('', $secure).Password
         }
-        catch { Write-Host "motdepasse.json : mot de passe par défaut illisible ici : $_" }
+        catch { Write-Host ((Tr 'motdepasse.json : mot de passe par défaut illisible ici : {0}') -f $_) }
     }
     $setting
 }

@@ -80,7 +80,7 @@ function Get-SelectedComputer {
 function ConvertTo-ReadComputer($Computers) {
     # What a background read needs of each computer (Start-WindowRead): a copy of the row's name, DN and domain, rather
     # than the row the grid shows.
-    foreach ($computer in $Computers) { @{ ComputerName = $computer.ComputerName; OU = $computer.OU; Domain = $computer.Domain } }
+    foreach ($computer in $Computers) { @{ ComputerName = $computer.ComputerName; DistinguishedName = $computer.DistinguishedName; Domain = $computer.Domain } }
 }
 
 # Without -Server, AD commands go to the user's domain, so every action passes the domain the row was found in
@@ -179,9 +179,9 @@ function Format-BitLockerKey($Computers, [switch]$WithOthers) {
     $others = 0
     $sections = foreach ($computer in $Computers) {
         try {
-            $keys = @(Get-BitLockerKey $computer.OU $computer.Domain | Sort-Object When -Descending)
+            $keys = @(Get-BitLockerKey $computer.DistinguishedName $computer.Domain | Sort-Object When -Descending)
             $more = @(if ($WithOthers) {
-                Get-ADObject -Server $computer.Domain -Filter "-not (objectClass -eq 'msFVE-RecoveryInformation')" -SearchBase $computer.OU -SearchScope OneLevel -ErrorAction Stop
+                Get-ADObject -Server $computer.Domain -Filter "-not (objectClass -eq 'msFVE-RecoveryInformation')" -SearchBase $computer.DistinguishedName -SearchScope OneLevel -ErrorAction Stop
             })
             $others += $more.Count
             $also = if ($more.Count) { "`n  " + ((Tr 'Aussi supprimé : {0}') -f (@($more | ForEach-Object { "$($_.Name) ($(@($_.ObjectClass)[-1]))" }) -join ', ')) }
@@ -235,7 +235,7 @@ function Get-SelfComputerDN {
     try {
         foreach ($account in Get-ADObject -Server $self.ComputerDomain -LDAPFilter $filter -ErrorAction Stop) { [string]$account.DistinguishedName }
     }
-    catch { Write-Host "Compte de cet ordinateur non lu dans AD, reconnu par son DN et son nom: $_" }
+    catch { Write-Host ((Tr 'Compte de cet ordinateur non lu dans AD, reconnu par son DN et son nom : {0}') -f $_) }
 }
 
 function Get-ComputerGuard($Computers) {
@@ -258,14 +258,14 @@ function Get-ComputerGuard($Computers) {
             $controllers[$computer.Domain] = try { Get-DomainControllerDN $computer.Domain } catch { [string]$_.Exception.Message }
         }
         $known = $controllers[$computer.Domain]
-        if ($known -isnot [string] -and -not $askedSelf -and (Get-DomainOfDN $computer.OU) -eq $script:Self.ComputerDomain) {
+        if ($known -isnot [string] -and -not $askedSelf -and (Get-DomainOfDN $computer.DistinguishedName) -eq $script:Self.ComputerDomain) {
             $askedSelf = $true
             $fromAD = @(Get-SelfComputerDN)
             if ($fromAD.Count) { $selfDN = $fromAD }
         }
         $why = if ($known -is [string]) { (Tr 'contrôleur de domaine ou non, AD ne le dit pas : {0}') -f (ConvertTo-FrenchError $known) }
-               elseif ($known.Contains($computer.OU)) { Tr 'contrôleur de domaine' }
-               elseif ($selfDN -contains $computer.OU -or (Test-SelfAccount $computer.ComputerName $computer.Domain -Computer)) { Tr "l'ordinateur où Repère est ouvert" }
+               elseif ($known.Contains($computer.DistinguishedName)) { Tr 'contrôleur de domaine' }
+               elseif ($selfDN -contains $computer.DistinguishedName -or (Test-SelfAccount $computer.ComputerName $computer.Domain -Computer)) { Tr "l'ordinateur où Repère est ouvert" }
         if ($why) { $skipped.Add("$($computer.ComputerName) ($why)") } else { $allowed.Add($computer) }
     }
     @{ Allowed = @($allowed); Skipped = @($skipped) }
@@ -549,7 +549,7 @@ function Update-OnlineCheck {
         }
         if ($check.Handle.IsCompleted -and $check.Read -ge $check.Output.Count) {
             $onlineChecks.Remove($check) | Out-Null
-            try { $null = $check.Shell.EndInvoke($check.Handle) } catch { Write-Host "Vérifier en ligne : $_" }
+            try { $null = $check.Shell.EndInvoke($check.Handle) } catch { Write-Host ((Tr 'Vérifier en ligne : {0}') -f $_) }
             finally { $check.Shell.Dispose() }
             # A computer the check couldn't answer for (an error) isn't left « … ».
             foreach ($row in $check.Rows.Values) {
@@ -865,7 +865,7 @@ function Request-TemporaryWinRM($Computer, [string]$Title, [string]$Message, [st
                     Show-ActionReport @((Tr "✖ {0} : WinRM non activé ({1})") -f $computer.ComputerName, (Get-RemoteFailureReason $state.Failure)) -Title $state.Title
                     return
                 }
-                Write-Host "Activer WinRM ($($computer.HostName)) : $($state.Failure), mais WinRM répond."
+                Write-Host ((Tr 'Activer WinRM ({0}) : {1}, mais WinRM répond.') -f $computer.HostName, $state.Failure)
                 # When the computer puts it back on its own isn't known: the task that does it says so, not the failure.
                 Add-WinRMLease $computer $null $state.Title
                 Open-WinRMClient $computer $state.OpenWith
@@ -1053,7 +1053,7 @@ function Open-SpecsWindow($Computer) {
     # The window, once the computer answered; it keeps WinRM on while it's open when Repère turned it on there.
     Show-SpecsWindow $Computer $script:win $script:windowIcon $script:fakeADModule
     $lease = $script:WinRMLeases[$Computer.HostName]
-    $window = $script:SpecsWindows["$($Computer.Domain)|$($Computer.OU)"]
+    $window = $script:SpecsWindows["$($Computer.Domain)|$($Computer.DistinguishedName)"]
     if (-not $lease -or -not $window) { return }
     if (-not $lease.Holders.Contains($window.Tag)) { $lease.Holders.Add($window.Tag) }
     Update-WinRMLease
@@ -1063,7 +1063,8 @@ function Open-RemoteTerminal($Computer) {
     # With the fake AD, nothing is started: the dialog shows the command, and closing it stands for closing the terminal.
     $title = Tr 'PowerShell à distance'
     $path = (Get-Process -Id $PID).Path
-    $arguments = "-NoExit -Command `"Enter-PSSession -ComputerName $($Computer.HostName)`""
+    # Quoted for PowerShell: one word, whatever it holds (Start-RemotePowerShell only lets a host name's characters by).
+    $arguments = "-NoExit -Command `"Enter-PSSession -ComputerName '$($Computer.HostName.Replace("'", "''"))'`""
     $lease = $script:WinRMLeases[$Computer.HostName]
     $process = $null
     if ($useFakeAD) { Show-Dialog -Title $title -Message ((Tr "AD fictif : rien n'est lancé.") + "`n`n$path $arguments") }
@@ -1114,21 +1115,21 @@ function Invoke-ComputerWrite([string]$Action, $Computers, $Value, [string]$Serv
         $change = {
             param([string]$At)
             switch ($Action) {
-                'Enable' { $null = Enable-ADAccount -Server $At -Identity $computer.OU -ErrorAction Stop; 0 }
-                'Disable' { $null = Disable-ADAccount -Server $At -Identity $computer.OU -ErrorAction Stop; 0 }
+                'Enable' { $null = Enable-ADAccount -Server $At -Identity $computer.DistinguishedName -ErrorAction Stop; 0 }
+                'Disable' { $null = Disable-ADAccount -Server $At -Identity $computer.DistinguishedName -ErrorAction Stop; 0 }
                 'Description' {
-                    if ($Value) { $null = Set-ADComputer -Server $At -Identity $computer.OU -Description $Value -ErrorAction Stop }
-                    else { $null = Set-ADComputer -Server $At -Identity $computer.OU -Clear Description -ErrorAction Stop }
+                    if ($Value) { $null = Set-ADComputer -Server $At -Identity $computer.DistinguishedName -Description $Value -ErrorAction Stop }
+                    else { $null = Set-ADComputer -Server $At -Identity $computer.DistinguishedName -Clear Description -ErrorAction Stop }
                     0
                 }
                 'Move' {
                     # Checked first, as for a deletion: the protection forbids moves too, and is reported, never removed.
-                    $object = Get-ADObject -Server $At -Identity $computer.OU -Properties ProtectedFromAccidentalDeletion -ErrorAction Stop
+                    $object = Get-ADObject -Server $At -Identity $computer.DistinguishedName -Properties ProtectedFromAccidentalDeletion -ErrorAction Stop
                     if ($object.ProtectedFromAccidentalDeletion) { throw (Tr 'protégé contre la suppression accidentelle, non déplacé') }
-                    $null = Move-ADObject -Server $At -Identity $computer.OU -TargetPath $Value -ErrorAction Stop
+                    $null = Move-ADObject -Server $At -Identity $computer.DistinguishedName -TargetPath $Value -ErrorAction Stop
                     0
                 }
-                'Remove' { Remove-ComputerFromAD $computer.OU $At }
+                'Remove' { Remove-ComputerFromAD $computer.DistinguishedName $At }
             }
         }
         $result = try {
@@ -1514,7 +1515,7 @@ function Stop-OuLoad($State) {
     # (Remove-StoppedJob: one stuck on a DC may only end on its own).
     $job = $State.Job
     $State.Job = $null
-    if (-not $job -or $job.Done) { return }
+    if (-not $job -or $job['Done']) { return }
     if ($job.Handle.IsCompleted) { $job.Shell.Dispose(); return }
     $null = $job.Shell.BeginStop($null, $null)
     $script:search.Stopping.Add($job)
@@ -1527,7 +1528,7 @@ function Show-MoveDialog($Computers, [string[]]$Skipped, [hashtable]$Detail) {
     $dialog.Owner = if ($Detail) { $Detail.Window } else { $script:win }
     $dialog.Icon = $script:windowIcon
     Set-WindowChrome $dialog
-    $currentOUs = @($Computers | ForEach-Object { Get-ParentDN $_.OU } | Select-Object -Unique)
+    $currentOUs = @($Computers | ForEach-Object { Get-ParentDN $_.DistinguishedName } | Select-Object -Unique)
     $state = @{
         Dialog = $dialog; Tree = $dialog.FindName('move_tree'); Status = $dialog.FindName('move_status')
         Computers = $Computers; Domain = $Computers[0].Domain; Items = @{}; Target = $null; Job = $null; Pick = $false
@@ -1650,7 +1651,7 @@ function Initialize-OuDialog($State) {
             $ok.IsEnabled = $false
             return
         }
-        $already = @($state.Computers | Where-Object { (Get-ParentDN $_.OU) -eq $state.Target }).Count
+        $already = @($state.Computers | Where-Object { (Get-ParentDN $_.DistinguishedName) -eq $state.Target }).Count
         $note = if ($already -eq $state.Computers.Count) { ' ' + (Tr '(ils y sont déjà)') } elseif ($already) { ' ' + ((Tr '({0} y sont déjà)') -f $already) }
         $destination = Tr 'Destination : {0}'
         Set-MoveTarget $state.Dialog (($destination -f (Get-OUPath "CN=x,$($state.Target)")) + $note) (($destination -f (Get-ShortPath "CN=x,$($state.Target)")) + $note) $true
@@ -1669,8 +1670,8 @@ function Initialize-OuDialog($State) {
 }
 
 function Set-RowLocation($Row, [string]$DistinguishedName) {
-    Save-RowChange $Row.OU 'DistinguishedName' $DistinguishedName
-    $Row.OU = $DistinguishedName
+    Save-RowChange $Row.DistinguishedName 'DistinguishedName' $DistinguishedName
+    $Row.DistinguishedName = $DistinguishedName
     $Row.ShortPath = Get-ShortPath $DistinguishedName
     $Row.OUPath = Get-OUPath $DistinguishedName
     Update-RowText $Row
@@ -1679,13 +1680,13 @@ function Set-RowLocation($Row, [string]$DistinguishedName) {
 function Move-Computer($Computers, [string]$Target, [hashtable]$Detail) {
     # Moves each computer to the OU, in its domain, then updates its row (Emplacement column). $Detail: from its
     # Propriétés (Start-ComputerWrite).
-    $there = @($Computers | Where-Object { (Get-ParentDN $_.OU) -eq $Target } | ForEach-Object { (Tr '✔ {0} (déjà dans cette OU)') -f $_.ComputerName })
-    $moving = @($Computers | Where-Object { (Get-ParentDN $_.OU) -ne $Target })
+    $there = @($Computers | Where-Object { (Get-ParentDN $_.DistinguishedName) -eq $Target } | ForEach-Object { (Tr '✔ {0} (déjà dans cette OU)') -f $_.ComputerName })
+    $moving = @($Computers | Where-Object { (Get-ParentDN $_.DistinguishedName) -ne $Target })
     # « Déplacé » only when one was: all already there, the notice keeps the action's name.
     Start-ComputerWrite 'Move' $moving $Target (Tr 'Déplacer') {
         param($computer, $result, $value)
         $from = $computer.ShortPath
-        Set-RowLocation $computer "$(($computer.OU -split '(?<!\\),', 2)[0]),$value"
+        Set-RowLocation $computer "$(($computer.DistinguishedName -split '(?<!\\),', 2)[0]),$value"
         (Tr '✔ {0} : {1} → {2}') -f $computer.ComputerName, $from, $computer.ShortPath
     } $there -Outcome $(if ($moving.Count) { (Tr 'Déplacé'), (Tr 'Déplacés') }) -Detail $Detail
 }
@@ -1789,7 +1790,10 @@ $actions.Enable = {
 
 $actions.Disable = {
     # Only the enabled ones (Request-ComputerDisable).
-    Request-ComputerDisable @(Get-SelectedComputer)
+    # Stored first, as everywhere: @() around the call would make the whole selection one item, which the guard (the
+    # domain controllers, this computer) wouldn't know.
+    $selected = Get-SelectedComputer
+    Request-ComputerDisable $selected
 }
 
 $actions.BitLocker = {
@@ -1838,7 +1842,7 @@ $actions.Remove = {
             Start-ComputerWrite 'Remove' $state.Selected $null (Tr "Supprimer de l'AD") {
                 param($computer, $result)
                 $script:results.Rows.Remove($computer) | Out-Null
-                Save-RowChange $computer.OU 'Removed' $true
+                Save-RowChange $computer.DistinguishedName 'Removed' $true
                 if ($result.Children -eq 1) { (Tr '✔ {0} (avec 1 objet enfant)') -f $computer.ComputerName }
                 elseif ($result.Children -gt 1) { (Tr '✔ {0} (avec {1} objets enfants)') -f $computer.ComputerName, $result.Children }
                 else { "✔ $($computer.ComputerName)" }
@@ -1859,7 +1863,11 @@ $actions.Groups = {
 $actions.GroupsAdd = { Show-SelectionGroupAdd @(ConvertTo-GroupMember (Get-SelectedComputer) 'Computer') }
 $actions.GroupsRemove = { Show-SelectionGroupRemove @(ConvertTo-GroupMember (Get-SelectedComputer) 'Computer') }
 
-$actions.Move = { Request-ComputerMove @(Get-SelectedComputer) }
+$actions.Move = {
+    # Stored first, as for Désactiver: the guard reads the computers one by one.
+    $selected = Get-SelectedComputer
+    Request-ComputerMove $selected
+}
 
 $actions.NextName = {
     # Prochain nom… (NextName.ps1) on the series of the computer selected: its name, which the window turns into a

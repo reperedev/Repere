@@ -348,8 +348,8 @@ function Initialize-SettingsWindow {
     Connect-SccmSetting $root
     $root.FindName('settings_update_link').Add_Click({ if ($script:NewerRelease) { Start-Process $script:NewerRelease.Url } })
     Update-ReleaseNotice
-    $root.FindName('settings_changelog').Visibility = ConvertTo-Visibility ([bool](Get-ChangelogEntry $script:ChangelogPath $script:RepereVersion))
-    $root.FindName('settings_changelog_link').Add_Click({ Show-ChangelogWindow (Get-ChangelogEntry $script:ChangelogPath $script:RepereVersion) })
+    $root.FindName('settings_changelog').Visibility = ConvertTo-Visibility ([bool](Get-ShownChangelogEntry $script:RepereVersion))
+    $root.FindName('settings_changelog_link').Add_Click({ Show-ChangelogWindow (Get-ShownChangelogEntry $script:RepereVersion) })
 
     $nav = $root.FindName('settings_nav')
     # Leaving SCCM or Redémarrage saves what was typed there (what can't be stays typed, its problem shown).
@@ -494,7 +494,7 @@ function Connect-SccmSetting($Root) {
         # whatever it is.
         $button.IsEnabled = $false
         try {
-            Start-BackgroundRead -Command 'Get-SccmCheck' -Arguments @(@{ Site = $site.ToUpperInvariant(); Server = $server }, 'REPERE-TEST-') `
+            Start-BackgroundRead -Command 'Get-SccmCheck' -Arguments @(@{ Site = $site.ToUpperInvariant(); Server = $server }, 'REPERE-TEST-') -Functions 'Get-ErrorKind' `
                 -Variables (Get-SccmReadVariable) -Timeout ($script:ReadTimeout + $script:SccmTimeoutSeconds) -Context @{ Site = $site.ToUpperInvariant(); Button = $button } -OnDone {
                 param($context, $check, $problem)
                 # Even with Paramètres closed meanwhile: it's only hidden, and the next opening can test again.

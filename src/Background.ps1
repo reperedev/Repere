@@ -10,7 +10,14 @@
 $script:BackgroundReadList = [System.Collections.Generic.List[object]]::new()
 $script:BackgroundReadTimer = [System.Windows.Threading.DispatcherTimer]::new()
 $script:BackgroundReadTimer.Interval = [timespan]::FromMilliseconds(40)
-$script:BackgroundReadTimer.Add_Tick({ Complete-BackgroundRead })
+# An OnDone can open a window that waits (ShowDialog), from which a read or a change starts: WPF's timer doesn't tick
+# again until its Tick handler returns, so what the window started would only end once it's closed. Started again
+# first, it goes on ticking meanwhile.
+$script:BackgroundReadTimer.Add_Tick({
+    $script:BackgroundReadTimer.Stop()
+    $script:BackgroundReadTimer.Start()
+    Complete-BackgroundRead
+})
 
 # How long a read may wait for its DC, in seconds, counted from when it starts on a runspace (one waiting for a free
 # runspace isn't counted). A read is a few queries on one object, which a DC that answers gives in a second or two. A
@@ -92,7 +99,7 @@ function Complete-BackgroundRead {
         $null = $read.Shell.BeginStop($null, $null)
         $script:BackgroundStopping.Add($read)
         try { & $read.OnDone $read.Context $null (Get-ReadTimeoutProblem $read.Timeout) $true }
-        catch { Write-Host "Lecture en arrière-plan : $_" }
+        catch { Write-Host ((Tr 'Lecture en arrière-plan : {0}') -f $_) }
     }
     foreach ($read in @($script:BackgroundStopping | Where-Object { $_.Handle.IsCompleted })) {
         if ($script:BackgroundStopping.Remove($read)) { $read.Shell.Dispose() }
@@ -106,7 +113,7 @@ function Complete-BackgroundRead {
                 $null = $script:BackgroundReadList.Remove($read)
                 $read.Shell.Dispose()
                 try { & $read.OnDone $read.Context $null $why $false }
-                catch { Write-Host "Lecture en arrière-plan : $_" }
+                catch { Write-Host ((Tr 'Lecture en arrière-plan : {0}') -f $_) }
             }
         }
     }
@@ -123,7 +130,7 @@ function Complete-BackgroundRead {
         catch { $problem = if ($_.Exception.InnerException) { $_.Exception.InnerException.Message } else { $_.Exception.Message } }
         finally { $read.Shell.Dispose() }
         try { & $read.OnDone $read.Context $result $problem $false }
-        catch { Write-Host "Lecture en arrière-plan : $_" }
+        catch { Write-Host ((Tr 'Lecture en arrière-plan : {0}') -f $_) }
     }
     # Going on while a read stopped hasn't ended, so it's disposed of.
     if (-not $script:BackgroundReadList.Count -and -not $script:BackgroundStopping.Count) { $script:BackgroundReadTimer.Stop() }

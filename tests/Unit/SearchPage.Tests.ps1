@@ -328,3 +328,22 @@ Describe "The search time's tooltip, a table (#334)" {
         [System.Windows.Automation.AutomationProperties]::GetHelpText($target) | Should -BeNullOrEmpty
     }
 }
+
+Describe 'Get-ADFilterText: a text typed, in a -like clause of -Filter' {
+    It '<Text>' -ForEach @(
+        @{ Text = 'accueil'; Expected = 'accueil' }
+        @{ Text = 'a*b'; Expected = 'a\2ab' }
+        @{ Text = 'DEMO\jbertrand'; Expected = 'DEMO\5cjbertrand' }
+        # The backslash first: an escape typed is that text, not the star.
+        @{ Text = '\2a'; Expected = '\5c2a' }
+        @{ Text = "salle d'accueil (2e)"; Expected = "salle d''accueil (2e)" }
+    ) {
+        Get-ADFilterText $Text | Should -BeExactly $Expected
+    }
+
+    It 'Finds that text only, in the fake AD' {
+        $all = @(Get-ADComputer -Server demo.local -Filter "Description -like '*'")
+        $all.Count | Should -BeGreaterThan 0
+        @(Get-ADComputer -Server demo.local -Filter "Description -like '*$(Get-ADFilterText '*')*'").Count | Should -Be @($all | Where-Object { "$($_.Description)".Contains('*') }).Count
+    }
+}

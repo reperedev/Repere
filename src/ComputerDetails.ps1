@@ -255,7 +255,7 @@ function Get-ComputerDetailTarget($State) {
     # with it), else the window's copy.
     $dn = [string]$State.Row.DistinguishedName
     $rows = if (Test-Path variable:script:results) { @($script:results.Rows) } else { @() }
-    $shown = $rows | Where-Object { [string]::Equals([string]$_.OU, $dn, [System.StringComparison]::OrdinalIgnoreCase) } | Select-Object -First 1
+    $shown = $rows | Where-Object { [string]::Equals([string]$_.DistinguishedName, $dn, [System.StringComparison]::OrdinalIgnoreCase) } | Select-Object -First 1
     if ($shown) { $State.Row.Computer = $shown }
     $State.Row.Computer
 }
@@ -300,7 +300,7 @@ function Complete-ComputerDetailChange($State, [string[]]$Lines, [string]$Title,
     # once it has read the computer again. Moved, it's known by its new DN. Closed meanwhile: reported as the page's.
     if ($State['Closed']) { Show-ActionReport $Lines $Title -Outcome $Outcome; return }
     $row = $State.Row
-    $row.DistinguishedName = [string]$row.Computer.OU
+    $row.DistinguishedName = [string]$row.Computer.DistinguishedName
     $key = Get-DetailWindowKey 'computer_detail' $row
     if ($key -ne $State.Key) {
         $script:DetailWindows.Remove($State.Key)
@@ -514,7 +514,7 @@ function Show-ComputerDetail($Computer, $Owner, $Icon) {
     # The window opens at once, « Lecture… »; the computer is read in the background. A row of the page ($Computer):
     # the window keeps a copy, and acts on the page's row while the grid lists it (Get-ComputerDetailTarget).
     $row = [pscustomobject]@{
-        Name = [string]$Computer.ComputerName; Domain = [string]$Computer.Domain; DistinguishedName = [string]$Computer.OU; Computer = $Computer.PSObject.Copy()
+        Name = [string]$Computer.ComputerName; Domain = [string]$Computer.Domain; DistinguishedName = [string]$Computer.DistinguishedName; Computer = $Computer.PSObject.Copy()
     }
     Show-DetailWindow @{ Row = $row; Detail = $null; Update = 'Update-ComputerDetail'; Read = 'Get-ComputerDetailRead'; CopyText = 'Get-ComputerDetailText' } `
         'computer_detail' ((Tr 'Propriétés de {0}') -f $row.Name) $Owner $Icon -Glyph 'monitor'

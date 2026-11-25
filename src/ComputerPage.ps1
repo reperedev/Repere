@@ -408,7 +408,7 @@ $rowBuilderScript = {
         $row = [pscustomobject]@{
             ComputerName = [string]$Computer.Name
             Domain       = $Domain
-            OU           = $dn
+            DistinguishedName = $dn
             # Domain/OU, for the messages and the export; OUPath (Postes › Communs) is what the grid shows.
             ShortPath    = $shortPath
             OUPath       = $ouPath
@@ -477,14 +477,14 @@ function Update-AllRowText {
 # sorts and filters them again.
 function Set-RowDescription($Row, [string]$Description) {
     $Row.Description = if ($Description) { $Description } else { $null }
-    Save-RowChange $Row.OU 'Description' $Row.Description
+    Save-RowChange $Row.DistinguishedName 'Description' $Row.Description
     Update-RowText $Row
 }
 
 function Set-RowState($Row, [bool]$Enabled) {
     $Row.Disabled = if ($Enabled) { $null } else { Tr 'Désactivé' }
     $Row.IsOn = $Enabled
-    Save-RowChange $Row.OU 'Enabled' $Enabled
+    Save-RowChange $Row.DistinguishedName 'Enabled' $Enabled
 }
 
 function Update-ChangedRow {
@@ -891,7 +891,7 @@ function Invoke-Search([string]$ForUser) {
 
     # Double single quotes so input like "d'accueil" doesn't break the AD filter.
     $prefix     = $prefixText.Trim() -replace "'", "''"
-    $searchTerm = $termText -replace "'", "''"
+    $searchTerm = Get-ADFilterText $termText
 
     # The name's box: that text anywhere in the name. The other box narrows it down, so both have to match.
     $filter = if ($hasPrefix) { "Name -like '*$prefix*'" } else { "Name -like '*'" }
@@ -1150,7 +1150,7 @@ function Complete-Search {
             $job.Shell.Dispose()
         }
         if ($answer.Error) {
-            Write-Host "Erreur de recherche AD ($($job.Domain)): $($answer.Error)"
+            Write-Host ((Tr 'Erreur de recherche AD ({0}) : {1}') -f $job.Domain, $answer.Error)
             $errors[$job.Domain] = $answer.Error
             continue
         }
@@ -1165,7 +1165,7 @@ function Complete-Search {
     if ($current.Changes.Count) {
         foreach ($domainRows in @($found)) {
             foreach ($row in @($domainRows)) {
-                $dn = $row.OU
+                $dn = $row.DistinguishedName
                 if ($current.Changes.ContainsKey("$dn|Removed")) { $row | Add-Member Removed $true -Force; continue }
                 # Moved during the search: the changes made after the move are kept under its new DN.
                 if ($current.Changes.ContainsKey("$dn|DistinguishedName")) {
@@ -1261,7 +1261,7 @@ function Complete-Search {
         if ($script:results.Need) { Show-AddressNeed $script:results.Need }
     }
     catch {
-        Write-Host "Erreur de recherche : $_"
+        Write-Host ((Tr 'Erreur de recherche : {0}') -f $_)
         $script:results.Failed = $true
         $script:results.NotFound = @()
         Show-ResultRow ([System.Collections.ObjectModel.ObservableCollection[object]]::new())
@@ -1433,7 +1433,7 @@ if ($script:Appearance.Columns) {
     try { Set-ColumnLayout $script:Appearance.Columns }
     catch {
         # A hand-edited settings file shouldn't keep Repère from starting.
-        Write-Host "Colonnes ignorées : $_"
+        Write-Host ((Tr 'Colonnes ignorées : {0}') -f $_)
         Set-ColumnLayout $gridColumns.Default
     }
 }
@@ -1472,12 +1472,21 @@ function Get-ComputerExportField($Columns) {
         ShortPath = @{ Value = 'OUPath' }
         Online    = @{ Value = 'OnlineLabel' }, @{ Header = (Tr 'Adresse IP'); Value = 'OnlineAddress' }
     }
-    Get-ExportField $Columns $fields @(@{ Header = (Tr 'Nom distinctif'); Value = 'OU' })
+    Get-ExportField $Columns $fields @(@{ Header = (Tr 'Nom distinctif'); Value = 'DistinguishedName' })
 }
 
 function Get-ComputerExportRow($Rows) {
     # The rows as Exporter writes them, a property per column (Get-ComputerExportField).
     ConvertTo-ExportRow $Rows (Get-ComputerExportField $dataGrid.Columns)
+}
+
+function Get-ComputerExportName([datetime]$Date) {
+    # The file name Exporter proposes: the domain of the search whose rows are shown, or none for several (not the list's
+    # « Tous les domaines », nor the domain chosen there since). The date in the Gregorian calendar whatever the culture's
+    # (-f would write 2569 in th-TH), so exports sort by name.
+    $searched = @(if ($results.LastSearch) { $results.LastSearch.Domains })
+    $scope = if ($searched.Count -eq 1) { '_' + ([string]$searched[0] -replace '[^\w\.\-]+', '-').ToLowerInvariant() } else { '' }
+    [string]::Format([System.Globalization.CultureInfo]::InvariantCulture, (Tr 'Repere_ordinateurs{0}_{1:yyyy-MM-dd}.csv'), $scope, $Date)
 }
 
 function Export-ShownRow {
@@ -1489,12 +1498,10 @@ function Export-ShownRow {
     if (-not $rows.Count) { return }
     $path = $env:REPERE_EXPORT_PATH
     if (-not $path) {
-        $scope = if ($showDomains) { [string]$comboBoxDomain.SelectedItem } else { $defaultDomain }
         $dialog = [Microsoft.Win32.SaveFileDialog]::new()
         $dialog.Title = Tr 'Exporter les ordinateurs'
         $dialog.Filter = Tr 'Fichiers CSV (*.csv)|*.csv'
-        # The date in the Gregorian calendar whatever the culture's (-f would write 2569 in th-TH), so exports sort by name.
-        $dialog.FileName = [string]::Format([System.Globalization.CultureInfo]::InvariantCulture, 'Repere_{0}_{1:yyyy-MM-dd}.csv', ($scope -replace '[^\w\.\-]+', '-').ToLowerInvariant(), (Get-Date))
+        $dialog.FileName = Get-ComputerExportName (Get-Date)
         $dialog.InitialDirectory = [Environment]::GetFolderPath('MyDocuments')
         if (-not $dialog.ShowDialog($win)) { return }
         $path = $dialog.FileName

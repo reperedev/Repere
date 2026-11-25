@@ -96,6 +96,13 @@ function Get-LdapText([string]$Text) {
     $Text.Replace('\', '\5c').Replace('*', '\2a').Replace('(', '\28').Replace(')', '\29').Replace([string][char]0, '\00')
 }
 
+function Get-ADFilterText([string]$Text) {
+    # A text typed, as the value of a -like clause of AD's -Filter takes it: the same text and nothing else, its * a star
+    # rather than any text, its \ a backslash (LDAP's escapes, which the filter passes on as they are), its quote doubled.
+    # The filter escapes the parentheses itself.
+    $Text.Replace('\', '\5c').Replace('*', '\2a').Replace("'", "''")
+}
+
 function ConvertTo-ComputerNameList([string]$Text) {
     # Computer names as pasted from a ticket or a spreadsheet (Ordinateurs › Liste de noms): separated by spaces, commas,
     # semicolons or line breaks, each once whatever its case, without a domain (DEMO\ORD-01, ord-01.demo.local) or the
@@ -1219,7 +1226,7 @@ function Initialize-PageColumn($Page) {
     if ($saved) {
         try { Set-PageColumnLayout $Page $saved }
         catch {
-            Write-Host "Colonnes ignorées ($($Page.Setting)) : $_"
+            Write-Host ((Tr 'Colonnes ignorées ({0}) : {1}') -f $Page.Setting, $_)
             Set-PageColumnLayout $Page $columns.Default
         }
     }
