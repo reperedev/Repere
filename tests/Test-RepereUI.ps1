@@ -1642,7 +1642,7 @@ function Test-RemoteActions([string[]]$MenuItems) {
         @{ Name = 'ORD-01'; Item = 11; Title = 'Ouvrir C$'; Command = 'explorer.exe \\ord-01.demo.local\c$' }
         @{ Name = 'ORD-03'; Item = 9; Title = 'Bureau à distance'; Command = 'mstsc.exe /v:ORD-03' }
         # ORD-01 answers on WinRM: the terminal opens at once.
-        @{ Name = 'ORD-01'; Item = 12; Title = 'PowerShell à distance'; Command = '*pwsh*-NoExit -Command "Enter-PSSession -ComputerName ord-01.demo.local"' }
+        @{ Name = 'ORD-01'; Item = 12; Title = 'PowerShell à distance'; Command = '*pwsh*-NoExit -Command "Enter-PSSession -ComputerName ''ord-01.demo.local''"' }
         @{ Name = 'ORD-01'; Item = 13; Title = 'Services'; Command = 'services.msc /computer=ord-01.demo.local' }
         @{ Name = 'ORD-01'; Item = 14; Title = "Observateur d'événements"; Command = 'eventvwr.exe ord-01.demo.local' }
         @{ Name = 'ORD-01'; Item = 16; Title = 'Annuler le redémarrage'; Command = 'shutdown.exe /a /m \\ord-01.demo.local' }
@@ -1696,7 +1696,7 @@ function Test-RemoteActions([string[]]$MenuItems) {
         $terminal = $null
         for ($i = 0; $i -lt 4 -and -not $terminal; $i++) { $terminal = Wait-AnyDialog }
         $text = if ($terminal) { Get-DialogText $terminal } else { '' }
-        if ($text -notlike "AD fictif : rien n'est lancé.*-NoExit -Command `"Enter-PSSession -ComputerName ord-04.demo.local`"") { $problems.Add("the terminal's dialog says '$text'") }
+        if ($text -notlike "AD fictif : rien n'est lancé.*-NoExit -Command `"Enter-PSSession -ComputerName 'ord-04.demo.local'`"") { $problems.Add("the terminal's dialog says '$text'") }
         if ($terminal) { Close-Dialog $terminal 'dialog_cancel' }
         $expected = 'PowerShell à distance : ✔ ORD-04 : WinRM remis comme avant'
         $notice = ''
@@ -1760,7 +1760,7 @@ function Test-WinRMEnableError([string]$MenuItem) {
         $terminal = $null
         for ($i = 0; $i -lt 8 -and -not $terminal; $i++) { $terminal = Wait-AnyDialog }
         $text = if ($terminal) { Get-DialogText $terminal } else { '' }
-        if ($text -notlike "AD fictif : rien n'est lancé.*Enter-PSSession -ComputerName ord-04.demo.local*") { $problems.Add("instead of the terminal: '$text'") }
+        if ($text -notlike "AD fictif : rien n'est lancé.*Enter-PSSession -ComputerName 'ord-04.demo.local'*") { $problems.Add("instead of the terminal: '$text'") }
         $shown = Find-ShownControl 'action_notice'
         if ($shown -and $shown.Current.Name -eq $running) { $problems.Add('the notice still says WinRM is being turned on') }
         if ($terminal) { Close-Dialog $terminal 'dialog_cancel' }
@@ -1876,7 +1876,7 @@ function Test-SpecsWindow {
            }
            # A desktop: neither Batterie nor Station d'accueil (#271).
            Hidden = 'spec_Battery_Capacity', 'toggle_Battery', 'spec_Dock_Status', 'toggle_Dock', 'spec_Processor_Vendor', 'spec_Processor_Extra', 'spec_Memory_Maker', 'spec_Memory_Part'
-           Alerts = "⛔  Windows 10 22H2 n'est plus supporté depuis le 2025-10-14.`n⛔  Volume C: plein à 94 % (14 Go libres)." }
+           Alerts = "⛔  Windows 10 22H2 n'est plus supporté depuis le 2025-10-14. Un ordinateur inscrit aux mises à jour de sécurité étendues (ESU) reste à jour pour la sécurité.`n⛔  Volume C: plein à 94 % (14 Go libres)." }
         # Off, or not in the DNS: a toast, as Vérifier en ligne says it, and no dialog to close.
         @{ Name = 'ORD-06'; Via = 'menu'; Notice = 'Caractéristiques : ✖ ORD-06 : hors ligne (pas de réponse au ping, ni à WinRM ni à DCOM)' }
         @{ Name = 'ORD-03'; Via = 'menu'; Notice = "Caractéristiques : ✖ ORD-03 : introuvable (son nom n'est pas dans le DNS)" }
@@ -3163,7 +3163,8 @@ function Test-Copy {
         if ($lines.Count -ne 2) { $problems.Add("$($lines.Count) lines copied") }
         foreach ($line in $lines) {
             $columns = $line -split "`t"
-            if ($columns.Count -ne 9 -or $columns[0] -notin 'ORD-10', 'ORD-11' -or $columns[6] -ne 'demo.local') { $problems.Add("a line says '$line'") }
+            # The columns shown, in their order (Compte first), then the distinguished name (Copier les lignes follows the grid).
+            if ($columns.Count -ne 9 -or $columns[1] -notin 'ORD-10', 'ORD-11' -or $columns[6] -ne 'demo.local' -or $columns[8] -notlike "CN=$($columns[1]),*") { $problems.Add("a line says '$line'") }
         }
     }
     Invoke-Check 'A notice shows under the results, not over them, and the last selected row stays in view' {
@@ -3211,7 +3212,9 @@ function Test-Copy {
         $item.GetCurrentPattern([System.Windows.Automation.InvokePattern]::Pattern).Invoke()
         Start-Sleep -Milliseconds 400
         $copied = (Get-Clipboard) -join ' | '
-        if (($copied -split "`t").Count -ne 12 -or ($copied -split "`t")[1] -ne 'lperrin') { $problems.Add("copied: '$copied'") }
+        $values = $copied -split "`t"
+        # The columns shown (État first, Courriel hidden), then the distinguished name.
+        if ($values.Count -ne 10 -or $values[2] -ne 'lperrin' -or $values[9] -notlike 'CN=Léa Perrin,*') { $problems.Add("copied: '$copied'") }
     }
 }
 
@@ -3370,14 +3373,17 @@ function Test-Export {
             if ($bytes[0] -ne 0xEF -or $bytes[1] -ne 0xBB -or $bytes[2] -ne 0xBF) { $problems.Add('the file has no UTF-8 BOM') }
             $separator = (Get-Culture).TextInfo.ListSeparator
             $header = (Get-Content -LiteralPath $exportFile -Encoding utf8 -TotalCount 1)
-            $expectedHeader = @('Nom', 'Description', 'Compte', 'Système', 'Version de Windows', 'Dernière connexion', 'Domaine', 'Emplacement', 'Nom distinctif') -join $separator
-            if ($header -ne $expectedHeader) { $problems.Add("the header is '$header', expected '$expectedHeader'") }
+            # The columns shown, in the grid's order (Système writing two), and the distinguished name always last. En
+            # ligne and its address once an earlier check has shown the column.
+            $shownColumns = @('Compte', 'Nom', 'Description', 'Dernière connexion', 'Système', 'Version de Windows', 'Domaine', 'Emplacement')
+            $expectedHeaders = @(($shownColumns + 'Nom distinctif') -join $separator), (($shownColumns + 'En ligne', 'Adresse IP', 'Nom distinctif') -join $separator)
+            if ($header -notin $expectedHeaders) { $problems.Add("the header is '$header', expected '$($expectedHeaders[0])'") }
             $rows = Read-Export
             $names = @($rows | ForEach-Object Nom)
             if (($names -join ', ') -ne ($shown -join ', ')) { $problems.Add("rows saved: $($names -join ', '); shown: $($shown -join ', ')") }
             $row = @($rows | Where-Object Nom -eq 'ORD-02')[0]
             if (-not $row -or $row.'Compte' -ne 'Activé' -or $row.'Système' -ne 'Win 11 24H2' -or $row.'Version de Windows' -ne 'Windows 11 Professionnel 10.0 (26100)' -or
-                $row.'Dernière connexion' -notmatch '^\d{4}-\d\d-\d\d \d\d:\d\d$' -or $row.Emplacement -ne 'demo.local/Postes' -or $row.'Nom distinctif' -ne 'CN=ORD-02,OU=Postes,DC=demo,DC=local') {
+                $row.'Dernière connexion' -notmatch '^\d{4}-\d\d-\d\d \d\d:\d\d$' -or $row.Emplacement -ne 'Postes' -or $row.'Nom distinctif' -ne 'CN=ORD-02,OU=Postes,DC=demo,DC=local') {
                 $problems.Add("ORD-02 is saved as: $($row | ConvertTo-Json -Compress)")
             }
             $note = (Find-Control 'search_time').Current.Name
@@ -4542,7 +4548,7 @@ function Test-UserPage {
         }
     }
 
-    Invoke-Check 'Utilisateurs: Exporter saves the users shown as CSV, with their email and distinguished name' {
+    Invoke-Check 'Utilisateurs: Exporter saves the users shown as CSV, the columns shown (not Courriel, hidden) and the distinguished name' {
         param($problems)
         Remove-Item $exportFile -ErrorAction SilentlyContinue
         Invoke-Element (Find-Control 'user_export')
@@ -4551,7 +4557,8 @@ function Test-UserPage {
         $logins = ($rows | ForEach-Object Identifiant) -join ', '
         if ($logins -ne 'jebertrand, jbertrand, pbertrand') { $problems.Add("logins exported: $logins") }
         $julie = @($rows | Where-Object Identifiant -eq 'jbertrand')[0]
-        if ($julie.Courriel -ne 'jbertrand@demo.local' -or $julie.'Nom distinctif' -ne 'CN=Julie Bertrand,OU=Utilisateurs,DC=demo,DC=local' -or $julie.'État' -ne 'Actif') {
+        if ($julie.PSObject.Properties['Courriel'] -or -not $julie.PSObject.Properties['Expiration du mot de passe'] -or
+            $julie.'Nom distinctif' -ne 'CN=Julie Bertrand,OU=Utilisateurs,DC=demo,DC=local' -or $julie.'État' -ne 'Actif') {
             $problems.Add("Julie's line: $($julie | ConvertTo-Json -Compress)")
         }
     }
@@ -6151,14 +6158,15 @@ function Test-GroupPage {
         if ($ScreenshotDirectory) { Save-Screenshot 'groupes' }
     }
 
-    Invoke-Check 'Groupes: Exporter saves the groups shown as CSV, and Colonnes offers the hidden ones' {
+    Invoke-Check 'Groupes: Exporter saves the groups shown as CSV, the columns shown, and Colonnes offers the hidden ones' {
         param($problems)
         Remove-Item $exportFile -ErrorAction SilentlyContinue
         Invoke-Element (Find-Control 'group_export')
         for ($i = 0; $i -lt 20 -and -not (Test-Path $exportFile); $i++) { Start-Sleep -Milliseconds 150 }
         $rows = @(Import-Csv -LiteralPath $exportFile -Delimiter (Get-Culture).TextInfo.ListSeparator -Encoding utf8)
         $accueil = @($rows | Where-Object Nom -eq 'GG-Accueil')[0]
-        if ($rows.Count -ne 7 -or $accueil.'Géré par' -ne 'Nathalie Lévy' -or $accueil.'Nom distinctif' -ne 'CN=GG-Accueil,OU=Groupes,DC=demo,DC=local') {
+        # Géré par is hidden until chosen in Colonnes: not saved either.
+        if ($rows.Count -ne 7 -or $accueil.PSObject.Properties['Géré par'] -or $accueil.'Étendue' -ne 'Globale' -or $accueil.'Nom distinctif' -ne 'CN=GG-Accueil,OU=Groupes,DC=demo,DC=local') {
             $problems.Add("$($rows.Count) lines, GG-Accueil's: $($accueil | ConvertTo-Json -Compress)")
         }
         Invoke-Element (Find-Control 'group_columns')
@@ -9364,18 +9372,20 @@ try {
     }
 
     if (Test-Session 'Changelog') {
-        # Nouveautés (#9): started as after an update from the version before this one (CHANGELOG.md's second entry);
-        # it shows the first entry's sections.
+        # Nouveautés (#9): started as after an update from the version before this one; it shows the sections of this
+        # version's entry (the main script's version: CHANGELOG.md may already describe the next one).
         $changelogLines = [System.IO.File]::ReadAllLines((Join-Path (Split-Path $PSScriptRoot) 'CHANGELOG.md'))
         $changelogStarts = @(for ($i = 0; $i -lt $changelogLines.Count; $i++) { if ($changelogLines[$i] -match '^## \d+\.\d+\.\d+\b') { $i } })
         $changelogVersions = @($changelogStarts | ForEach-Object { [regex]::Match($changelogLines[$_], '\d+\.\d+\.\d+').Value })
+        $changelogCurrent = [regex]::Match([System.IO.File]::ReadAllText((Join-Path (Split-Path $PSScriptRoot) 'src\Repere - Recherche PC AD par description.ps1')), "RepereVersion = '([\d.]+)'").Groups[1].Value
+        $changelogAt = [array]::IndexOf($changelogVersions, $changelogCurrent)
         # A section about every area is « Général » there.
-        $changelogEntry = $changelogLines[$changelogStarts[0]..$changelogStarts[1]]
+        $changelogEntry = $changelogLines[$changelogStarts[$changelogAt]..$changelogStarts[$changelogAt + 1]]
         $changelogSections = @($changelogEntry | Where-Object { $_ -match '^### ' } | ForEach-Object { $_.Substring(4).Trim() -replace '^Ordinateurs, Utilisateurs et Groupes$', 'Général' })
         $changelogPoints = @($changelogEntry | Where-Object { $_ -match '^[-*]\s' }).Count
-        $env:REPERE_CHANGELOG_SEEN = $changelogVersions[1]
+        $env:REPERE_CHANGELOG_SEEN = $changelogVersions[$changelogAt + 1]
         Start-App
-        Test-Changelog $changelogVersions[0] $changelogSections $changelogPoints
+        Test-Changelog $changelogCurrent $changelogSections $changelogPoints
         Test-ChangelogFit
         Stop-App
         Remove-Item $appearanceFile -ErrorAction SilentlyContinue

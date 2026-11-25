@@ -5,14 +5,36 @@ setlocal
 set "REPERE_DIR=%~dp0"
 rem Repere needs PowerShell 7.5 or later (WPF's Fluent theme): missing and too old are asked about here, in this
 rem console, while it's still seen. Once started headless below, nothing Repere's script writes would be.
-set "PWSH_FOUND=introuvable"
+set "PWSH_FOUND="
 call :findpwsh
 if defined PWSH goto run
 
-echo Repere demande PowerShell 7.5 ou plus recent (installe : %PWSH_FOUND%).
+call :findlanguage %*
+if "%REPERE_LANG%"=="en" goto english
+set "TEXT_NEEDS=Repere demande PowerShell 7.5 ou plus recent (installe :"
+set "TEXT_NONE=introuvable"
+set "TEXT_KEYS=ON"
+set "TEXT_ASK=L'installer maintenant avec winget ? (O/N) "
+set "TEXT_STILL=PowerShell 7.5 ou plus recent reste introuvable apres winget (code"
+set "TEXT_MANUAL=Installez PowerShell 7.5 ou plus recent, puis relancez Repere :"
+set "TEXT_OR=ou telechargez-le ici :"
+set "TEXT_PAUSE=Appuyez sur une touche pour continuer..."
+goto ask
+:english
+set "TEXT_NEEDS=Repere requires PowerShell 7.5 or later (installed:"
+set "TEXT_NONE=none"
+set "TEXT_KEYS=YN"
+set "TEXT_ASK=Install it now with winget? (Y/N) "
+set "TEXT_STILL=PowerShell 7.5 or later still not found after winget (code"
+set "TEXT_MANUAL=Install PowerShell 7.5 or later, then start Repere again:"
+set "TEXT_OR=or download it here:"
+set "TEXT_PAUSE=Press any key to continue..."
+:ask
+if not defined PWSH_FOUND set "PWSH_FOUND=%TEXT_NONE%"
+echo %TEXT_NEEDS% %PWSH_FOUND%).
 where winget.exe >nul 2>nul
 if errorlevel 1 goto manual
-choice /c ON /n /m "L'installer maintenant avec winget ? (O/N) "
+choice /c %TEXT_KEYS% /n /m "%TEXT_ASK%"
 if errorlevel 2 goto manual
 rem In this console, so that its progress and any prompt are seen.
 winget install --id Microsoft.PowerShell --source winget
@@ -22,15 +44,16 @@ rem code says, Repere starts if a PowerShell recent enough is there now.
 call :findpwsh
 if defined PWSH goto run
 echo.
-echo PowerShell 7.5 ou plus recent reste introuvable apres winget (code %WINGET_EXIT%).
+echo %TEXT_STILL% %WINGET_EXIT%).
 goto manual
 
 :manual
 echo.
-echo Installez PowerShell 7.5 ou plus recent, puis relancez Repere :
+echo %TEXT_MANUAL%
 echo     winget install --id Microsoft.PowerShell --source winget
-echo ou telechargez-le ici : https://aka.ms/powershell-release?tag=stable
-pause
+echo %TEXT_OR% https://aka.ms/powershell-release?tag=stable
+echo %TEXT_PAUSE%
+pause >nul
 exit /b 1
 
 :run
@@ -84,4 +107,23 @@ if not exist "%APPDATA%\Repere" mkdir "%APPDATA%\Repere" 2>nul
 >"%APPDATA%\Repere\pwsh.txt" 2>nul echo %PWSH_STAMP%
 :pwshok
 set "PWSH=%~1"
+exit /b 0
+
+:findlanguage
+rem REPERE_LANG: the language of the questions above, fr or en, as Repere would choose its own (Language.ps1): -Language
+rem when the shortcut gives it, else the one saved in its settings, else French for someone who used it before, else
+rem Windows's. Windows PowerShell, which every Windows has, reads it; French without it.
+set "REPERE_LANG="
+:nextargument
+if "%~1"=="" goto checklanguage
+if /i "%~1"=="-Language" set "REPERE_LANG=%~2"
+if /i "%~1"=="-Language:fr" set "REPERE_LANG=fr"
+if /i "%~1"=="-Language:en" set "REPERE_LANG=en"
+shift
+goto nextargument
+:checklanguage
+if /i "%REPERE_LANG%"=="fr" set "REPERE_LANG=fr"& exit /b 0
+if /i "%REPERE_LANG%"=="en" set "REPERE_LANG=en"& exit /b 0
+set "REPERE_LANG=fr"
+for /f "delims=" %%l in ('powershell.exe -NoProfile -NonInteractive -Command "$folder = Join-Path $env:APPDATA 'Repere'; $choice = $null; try { $choice = (Get-Content -LiteralPath (Join-Path $folder 'parametres.json') -Raw -Encoding UTF8 -ErrorAction Stop | ConvertFrom-Json).Language } catch { }; if ($null -eq $choice -and (Test-Path (Join-Path $folder '*.json'))) { $choice = 'fr' }; if ($choice -notin 'fr', 'en') { $choice = if ((Get-UICulture).TwoLetterISOLanguageName -eq 'fr') { 'fr' } else { 'en' } }; $choice" 2^>nul') do set "REPERE_LANG=%%l"
 exit /b 0

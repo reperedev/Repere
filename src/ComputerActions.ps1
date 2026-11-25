@@ -80,7 +80,7 @@ function Get-SelectedComputer {
 function ConvertTo-ReadComputer($Computers) {
     # What a background read needs of each computer (Start-WindowRead): a copy of the row's name, DN and domain, rather
     # than the row the grid shows.
-    foreach ($computer in $Computers) { @{ ComputerName = $computer.ComputerName; OU = $computer.OU; Domain = $computer.Domain } }
+    foreach ($computer in $Computers) { @{ ComputerName = $computer.ComputerName; DistinguishedName = $computer.DistinguishedName; Domain = $computer.Domain } }
 }
 
 # Without -Server, AD commands go to the user's domain, so every action passes the domain the row was found in
@@ -179,9 +179,9 @@ function Format-BitLockerKey($Computers, [switch]$WithOthers) {
     $others = 0
     $sections = foreach ($computer in $Computers) {
         try {
-            $keys = @(Get-BitLockerKey $computer.OU $computer.Domain | Sort-Object When -Descending)
+            $keys = @(Get-BitLockerKey $computer.DistinguishedName $computer.Domain | Sort-Object When -Descending)
             $more = @(if ($WithOthers) {
-                Get-ADObject -Server $computer.Domain -Filter "-not (objectClass -eq 'msFVE-RecoveryInformation')" -SearchBase $computer.OU -SearchScope OneLevel -ErrorAction Stop
+                Get-ADObject -Server $computer.Domain -Filter "-not (objectClass -eq 'msFVE-RecoveryInformation')" -SearchBase $computer.DistinguishedName -SearchScope OneLevel -ErrorAction Stop
             })
             $others += $more.Count
             $also = if ($more.Count) { "`n  " + ((Tr 'Aussi supprimé : {0}') -f (@($more | ForEach-Object { "$($_.Name) ($(@($_.ObjectClass)[-1]))" }) -join ', ')) }
@@ -235,7 +235,7 @@ function Get-SelfComputerDN {
     try {
         foreach ($account in Get-ADObject -Server $self.ComputerDomain -LDAPFilter $filter -ErrorAction Stop) { [string]$account.DistinguishedName }
     }
-    catch { Write-Host "Compte de cet ordinateur non lu dans AD, reconnu par son DN et son nom: $_" }
+    catch { Write-Host ((Tr 'Compte de cet ordinateur non lu dans AD, reconnu par son DN et son nom : {0}') -f $_) }
 }
 
 function Get-ComputerGuard($Computers) {
@@ -258,14 +258,14 @@ function Get-ComputerGuard($Computers) {
             $controllers[$computer.Domain] = try { Get-DomainControllerDN $computer.Domain } catch { [string]$_.Exception.Message }
         }
         $known = $controllers[$computer.Domain]
-        if ($known -isnot [string] -and -not $askedSelf -and (Get-DomainOfDN $computer.OU) -eq $script:Self.ComputerDomain) {
+        if ($known -isnot [string] -and -not $askedSelf -and (Get-DomainOfDN $computer.DistinguishedName) -eq $script:Self.ComputerDomain) {
             $askedSelf = $true
             $fromAD = @(Get-SelfComputerDN)
             if ($fromAD.Count) { $selfDN = $fromAD }
         }
         $why = if ($known -is [string]) { (Tr 'contrôleur de domaine ou non, AD ne le dit pas : {0}') -f (ConvertTo-FrenchError $known) }
-               elseif ($known.Contains($computer.OU)) { Tr 'contrôleur de domaine' }
-               elseif ($selfDN -contains $computer.OU -or (Test-SelfAccount $computer.ComputerName $computer.Domain -Computer)) { Tr "l'ordinateur où Repère est ouvert" }
+               elseif ($known.Contains($computer.DistinguishedName)) { Tr 'contrôleur de domaine' }
+               elseif ($selfDN -contains $computer.DistinguishedName -or (Test-SelfAccount $computer.ComputerName $computer.Domain -Computer)) { Tr "l'ordinateur où Repère est ouvert" }
         if ($why) { $skipped.Add("$($computer.ComputerName) ($why)") } else { $allowed.Add($computer) }
     }
     @{ Allowed = @($allowed); Skipped = @($skipped) }
@@ -293,7 +293,7 @@ function Start-ComputerGuard([string]$Title, [string]$Icon, $Computers, [scriptb
     if (-not $Computers.Count) { return }
     Start-WindowRead -Kind 'ComputerGuard' -Command 'Read-ComputerGuard' -Arguments @(@(ConvertTo-ReadComputer $Computers), [bool]$WithContents) `
         -Functions 'Get-ComputerGuard', 'Get-DomainControllerDN', 'Get-SelfComputerDN', 'Test-SelfAccount', 'Get-DomainOfDN', 'Get-LdapText', 'Read-ComputerContent', 'Format-BitLockerKey', 'Get-BitLockerKey' `
-        -Variables @{ Self = $script:Self } -Context @{ Computers = $Computers; Title = $Title; Icon = $Icon; OnAllowed = $OnAllowed; Owner = $Owner; Context = $Context } -OnDone {
+        -Variables @{ Self = $script:Self } -Timeout (Get-ReadTimeout $Computers.Count) -Context @{ Computers = $Computers; Title = $Title; Icon = $Icon; OnAllowed = $OnAllowed; Owner = $Owner; Context = $Context } -OnDone {
         param($context, $guard, $problem)
         if ($problem -or -not $guard) {
             $reason = if ($problem) { $problem } else { Tr 'AD n''a rien renvoyé' }
@@ -549,7 +549,7 @@ function Update-OnlineCheck {
         }
         if ($check.Handle.IsCompleted -and $check.Read -ge $check.Output.Count) {
             $onlineChecks.Remove($check) | Out-Null
-            try { $null = $check.Shell.EndInvoke($check.Handle) } catch { Write-Host "Vérifier en ligne : $_" }
+            try { $null = $check.Shell.EndInvoke($check.Handle) } catch { Write-Host ((Tr 'Vérifier en ligne : {0}') -f $_) }
             finally { $check.Shell.Dispose() }
             # A computer the check couldn't answer for (an error) isn't left « … ».
             foreach ($row in $check.Rows.Values) {
@@ -627,11 +627,16 @@ function Update-BackgroundAction {
             $failure = (Tr 'pas de réponse après {0} secondes (ordinateur éteint ou injoignable ?)') -f $action.Timeout
         }
         else {
+            # The message, with what its codes say (Add-ErrorKind) for Test-RemoteUnreachable and Get-RemoteFailureReason.
             try {
                 $output = @($action.Shell.EndInvoke($action.Handle))
-                if ($action.Shell.Streams.Error.Count) { $failure = $action.Shell.Streams.Error[0].Exception.Message }
+                if ($action.Shell.Streams.Error.Count) { $failure = Add-ErrorKind $action.Shell.Streams.Error[0].Exception.Message $action.Shell.Streams.Error[0] }
             }
-            catch { $failure = $_.Exception.InnerException.Message; if (-not $failure) { $failure = $_.Exception.Message } }
+            catch {
+                $failure = $_.Exception.InnerException.Message
+                if (-not $failure) { $failure = $_.Exception.Message }
+                $failure = Add-ErrorKind $failure $_
+            }
             finally { $action.Shell.Dispose() }
         }
         & $action.OnDone $output $failure $action.State
@@ -657,30 +662,43 @@ $policyUpdateScript = {
             Invoke-GPUpdate -Computer $HostName -Force -RandomDelayInMinutes 0
             return [pscustomobject]@{ Method = 'Invoke-GPUpdate'; ExitCode = 0 }
         }
-        catch { $gpmcError = $_.Exception.Message.Trim() }
+        catch { $gpmcError = $_ }
     }
     try { $code = Invoke-PolicyUpdateTask $HostName }
     catch {
-        if ($gpmcError) { throw "Invoke-GPUpdate : $gpmcError | $($_.Exception.Message.Trim())" }
-        throw
+        if (-not $gpmcError) { throw }
+        # Both messages in one, and both errors kept with it, for their codes (Get-ErrorKind).
+        $failure = [System.Exception]::new("Invoke-GPUpdate : $($gpmcError.Exception.Message.Trim()) | $($_.Exception.Message.Trim())", $_.Exception)
+        $failure.Data['Repere.Causes'] = @($gpmcError, $_)
+        throw $failure
     }
     [pscustomobject]@{ Method = 'Task'; ExitCode = $code }
 }.ToString()
 
-function Get-RemoteFailureReason([string]$Failure) {
-    # Why a remote action failed, from Windows' message, in its language. « Injoignable » only for Windows' transport
-    # errors: Repère's own messages name WinRM and Repere-WinRM too, about a computer that was reached.
+function Get-RemoteFailureReason($Failure) {
+    # Why a remote action failed. « Injoignable » only for Windows' transport errors: Repère's own messages name WinRM
+    # and Repere-WinRM too, about a computer that was reached. By the error's codes (Get-ErrorKind: the background
+    # action's failure carries them, Add-ErrorKind), whatever Windows' language; by Windows' message, in French or
+    # English, only for a failure that came as a text alone.
+    $kinds = @(Get-ErrorKind $Failure)
+    if ($kinds -contains 'AccessDenied') { return Tr "accès refusé (il faut être administrateur de l'ordinateur)" }
+    if ($kinds -contains 'RpcUnavailable' -or $kinds -contains 'WinRMUnreachable') { return (Tr 'ordinateur injoignable ({0})') -f $Failure }
+    if ($kinds.Count) { return "$Failure" }
     switch -Regex ($Failure) {
         'Accès refusé|Access is denied|0x80070005' { return Tr "accès refusé (il faut être administrateur de l'ordinateur)" }
         'serveur RPC n.est pas disponible|RPC server is unavailable|0x800706BA|0x80338012|WS-Management service cannot process' { return (Tr 'ordinateur injoignable ({0})') -f $Failure }
-        default { return $Failure }
+        default { return "$Failure" }
     }
 }
 
-function Test-RemoteUnreachable([string]$Failure) {
+function Test-RemoteUnreachable($Failure) {
     # Whether a remote action failed only because the computer didn't answer (off, or behind a firewall): Windows' « RPC
     # server unavailable », or no answer in time. That's said in a toast, as Vérifier en ligne says it; a refusal or
-    # another error stays a report, with Windows' message.
+    # another error stays a report, with Windows' message. By the error's codes first (Get-ErrorKind), as
+    # Get-RemoteFailureReason; then by the text: Repère's own « pas de réponse », and Windows' message for a failure
+    # that came as a text alone.
+    $kinds = @(Get-ErrorKind $Failure)
+    if ($kinds.Count) { return $kinds -notcontains 'AccessDenied' -and $kinds -contains 'RpcUnavailable' }
     $timedOut = [regex]::Escape((Tr 'pas de réponse après {0} secondes (ordinateur éteint ou injoignable ?)')).Replace('\{0}', '\d+')
     $Failure -notmatch 'Accès refusé|Access is denied|0x80070005' -and
         $Failure -match "serveur RPC n.est pas disponible|RPC server is unavailable|0x800706BA|^$timedOut$"
@@ -847,7 +865,7 @@ function Request-TemporaryWinRM($Computer, [string]$Title, [string]$Message, [st
                     Show-ActionReport @((Tr "✖ {0} : WinRM non activé ({1})") -f $computer.ComputerName, (Get-RemoteFailureReason $state.Failure)) -Title $state.Title
                     return
                 }
-                Write-Host "Activer WinRM ($($computer.HostName)) : $($state.Failure), mais WinRM répond."
+                Write-Host ((Tr 'Activer WinRM ({0}) : {1}, mais WinRM répond.') -f $computer.HostName, $state.Failure)
                 # When the computer puts it back on its own isn't known: the task that does it says so, not the failure.
                 Add-WinRMLease $computer $null $state.Title
                 Open-WinRMClient $computer $state.OpenWith
@@ -927,14 +945,15 @@ $specsCheckScript = {
         try { $null = Get-CimInstance -CimSession $session -ClassName Win32_OperatingSystem -OperationTimeoutSec 10 -ErrorAction Stop }
         finally { Remove-CimSession $session -ErrorAction SilentlyContinue }
     }
-    $winrmError = $null
+    $winrmError = $winrmCause = $null
     if ($open -contains 5985) {
         try { & $read; return [pscustomobject]@{ State = 'Ready'; Protocol = 'WinRM' } }
-        catch { $winrmError = $_.Exception.Message.Trim() }
+        catch { $winrmError = $_.Exception.Message.Trim(); $winrmCause = $_ }
     }
-    # WinRM's port closed, or WinRM refused: DCOM, as the window would (whether 135 answered in time or not).
+    # WinRM's port closed, or WinRM refused: DCOM, as the window would (whether 135 answered in time or not). The
+    # errors themselves too, for their codes (Get-SpecsCheckWarning).
     try { & $read -Dcom }
-    catch { return [pscustomobject]@{ State = 'Failed'; WinRMError = $winrmError; DcomError = $_.Exception.Message.Trim() } }
+    catch { return [pscustomobject]@{ State = 'Failed'; WinRMError = $winrmError; DcomError = $_.Exception.Message.Trim(); Causes = @($winrmCause, $_) } }
     if ($winrmError) { return [pscustomobject]@{ State = 'Ready'; Protocol = 'DCOM' } }
     [pscustomobject]@{ State = 'NoWinRM' }
 }.ToString()
@@ -1014,7 +1033,13 @@ function Get-SpecsCheckWarning([string]$Name, $Answer, [string]$Failure) {
             # Both messages, WinRM's first: its port closed says so.
             $winrm = if ($Answer.WinRMError) { $Answer.WinRMError } else { Tr 'le port 5985 ne répond pas' }
             $details = ((Tr 'WinRM : {0}') -f $winrm) + "`n" + ((Tr 'DCOM : {0}') -f $Answer.DcomError)
-            if ("$($Answer.WinRMError) $($Answer.DcomError)" -match 'Accès refusé|Access is denied|0x80070005') {
+            # Access denied by the errors' codes (Get-ErrorKind), whatever Windows' language; by their text, in French or
+            # English, only for an answer without its errors.
+            $causes = $Answer.PSObject.Properties['Causes']
+            $kinds = @(if ($causes) { Get-ErrorKind $causes.Value })
+            $denied = if ($kinds.Count) { $kinds -contains 'AccessDenied' }
+                      else { "$($Answer.WinRMError) $($Answer.DcomError)" -match 'Accès refusé|Access is denied|0x80070005' }
+            if ($denied) {
                 return @{ Heading = $cannotRead; Message = Tr "Accès refusé : il faut être administrateur de l'ordinateur."; Icon = 'lock'; Details = $details }
             }
             $message = if ($Answer.WinRMError) { Tr 'La connexion a échoué, par WinRM comme par DCOM.' } else { Tr 'WinRM est fermé, et la connexion par DCOM a échoué.' }
@@ -1028,7 +1053,7 @@ function Open-SpecsWindow($Computer) {
     # The window, once the computer answered; it keeps WinRM on while it's open when Repère turned it on there.
     Show-SpecsWindow $Computer $script:win $script:windowIcon $script:fakeADModule
     $lease = $script:WinRMLeases[$Computer.HostName]
-    $window = $script:SpecsWindows["$($Computer.Domain)|$($Computer.OU)"]
+    $window = $script:SpecsWindows["$($Computer.Domain)|$($Computer.DistinguishedName)"]
     if (-not $lease -or -not $window) { return }
     if (-not $lease.Holders.Contains($window.Tag)) { $lease.Holders.Add($window.Tag) }
     Update-WinRMLease
@@ -1038,7 +1063,8 @@ function Open-RemoteTerminal($Computer) {
     # With the fake AD, nothing is started: the dialog shows the command, and closing it stands for closing the terminal.
     $title = Tr 'PowerShell à distance'
     $path = (Get-Process -Id $PID).Path
-    $arguments = "-NoExit -Command `"Enter-PSSession -ComputerName $($Computer.HostName)`""
+    # Quoted for PowerShell: one word, whatever it holds (Start-RemotePowerShell only lets a host name's characters by).
+    $arguments = "-NoExit -Command `"Enter-PSSession -ComputerName '$($Computer.HostName.Replace("'", "''"))'`""
     $lease = $script:WinRMLeases[$Computer.HostName]
     $process = $null
     if ($useFakeAD) { Show-Dialog -Title $title -Message ((Tr "AD fictif : rien n'est lancé.") + "`n`n$path $arguments") }
@@ -1082,29 +1108,31 @@ function Invoke-ComputerWrite([string]$Action, $Computers, $Value, [string]$Serv
     # On a search runspace: the change, one computer at a time, each in its domain. Results, in their order: each one's
     # Problem ($null when it went well) and how many Children it held. $Server: the DC a Propriétés reads from (its
     # domain's PDC: Get-UserServer), for its one computer, so the window read again shows the change; when it doesn't
-    # answer, any DC of the domain.
+    # answer, any DC of the domain. Each one's result goes in the change's progress too (Add-WriteProgress, by index),
+    # for when the DC stops answering before the end.
+    $index = 0
     @{ Results = @(foreach ($computer in $Computers) {
         $change = {
             param([string]$At)
             switch ($Action) {
-                'Enable' { $null = Enable-ADAccount -Server $At -Identity $computer.OU -ErrorAction Stop; 0 }
-                'Disable' { $null = Disable-ADAccount -Server $At -Identity $computer.OU -ErrorAction Stop; 0 }
+                'Enable' { $null = Enable-ADAccount -Server $At -Identity $computer.DistinguishedName -ErrorAction Stop; 0 }
+                'Disable' { $null = Disable-ADAccount -Server $At -Identity $computer.DistinguishedName -ErrorAction Stop; 0 }
                 'Description' {
-                    if ($Value) { $null = Set-ADComputer -Server $At -Identity $computer.OU -Description $Value -ErrorAction Stop }
-                    else { $null = Set-ADComputer -Server $At -Identity $computer.OU -Clear Description -ErrorAction Stop }
+                    if ($Value) { $null = Set-ADComputer -Server $At -Identity $computer.DistinguishedName -Description $Value -ErrorAction Stop }
+                    else { $null = Set-ADComputer -Server $At -Identity $computer.DistinguishedName -Clear Description -ErrorAction Stop }
                     0
                 }
                 'Move' {
                     # Checked first, as for a deletion: the protection forbids moves too, and is reported, never removed.
-                    $object = Get-ADObject -Server $At -Identity $computer.OU -Properties ProtectedFromAccidentalDeletion -ErrorAction Stop
+                    $object = Get-ADObject -Server $At -Identity $computer.DistinguishedName -Properties ProtectedFromAccidentalDeletion -ErrorAction Stop
                     if ($object.ProtectedFromAccidentalDeletion) { throw (Tr 'protégé contre la suppression accidentelle, non déplacé') }
-                    $null = Move-ADObject -Server $At -Identity $computer.OU -TargetPath $Value -ErrorAction Stop
+                    $null = Move-ADObject -Server $At -Identity $computer.DistinguishedName -TargetPath $Value -ErrorAction Stop
                     0
                 }
-                'Remove' { Remove-ComputerFromAD $computer.OU $At }
+                'Remove' { Remove-ComputerFromAD $computer.DistinguishedName $At }
             }
         }
-        try {
+        $result = try {
             $at = if ($Server) { $Server } else { $computer.Domain }
             $children = try { & $change $at }
                         catch {
@@ -1114,6 +1142,9 @@ function Invoke-ComputerWrite([string]$Action, $Computers, $Value, [string]$Serv
             @{ Problem = $null; Children = [int]$children }
         }
         catch { @{ Problem = $_.Exception.Message; Children = 0 } }
+        Add-WriteProgress $index $result
+        $index++
+        $result
     }) }
 }
 
@@ -1124,20 +1155,45 @@ function Start-ComputerWrite([string]$Action, $Computers, $Value, [string]$Title
     # $Lines: lines the report starts with. $Outcome: the notice's heading when all went well (Show-ActionReport).
     # $Detail: the computer's Propriétés it was made from, which reads it again and says what it did
     # (Complete-ComputerDetailChange); made on the DC it reads from.
-    $server = if ($Detail) { Get-UserServer @($Computers)[0].Domain }
+    # A DC that doesn't answer within the changes' time limit (Get-WriteTimeout): the computers it said nothing about
+    # may have been changed, which their line says rather than that they failed.
+    # The DC a Propriétés reads from, when known; the first time, looked up on the change's runspace
+    # (Invoke-OnUserServer), so the window doesn't wait for AD to name the PDC.
+    $domain = @($Computers)[0].Domain
+    $server = if ($Detail) { Get-KnownUserServer $domain }
+    $timeout = Get-WriteTimeout @($Computers).Count
+    $progress = [hashtable]::Synchronized(@{})
+    $command = 'Invoke-ComputerWrite'
+    $arguments = @($Action, @(ConvertTo-ReadComputer $Computers), $Value, $server)
+    $functions = @('Remove-ComputerFromAD', 'Test-GroupRefusal', 'Test-SelfAccount', 'Get-DomainOfDN', 'Test-ServerDown', 'Add-WriteProgress')
+    $variables = @{ ComputerNotLeaf = $script:ComputerNotLeaf; Self = $script:Self; WriteProgress = $progress }
+    $sent = $null
+    if ($Detail -and -not $server) {
+        $sent = $script:DomainCache.Clone()
+        $arguments = @($domain, 3, $command, $arguments)
+        $command = 'Invoke-OnUserServer'
+        $functions += 'Invoke-ComputerWrite', 'Get-UserServer', 'Get-PdcFallback'
+        $variables.DomainCache = $sent.Clone()
+    }
     $script:search.Dialogs++
     try {
-        Start-WindowRead -Kind "$Action $([guid]::NewGuid())" -Command 'Invoke-ComputerWrite' -Arguments @($Action, @(ConvertTo-ReadComputer $Computers), $Value, $server) `
-            -Functions 'Remove-ComputerFromAD', 'Test-GroupRefusal', 'Test-SelfAccount', 'Get-DomainOfDN', 'Test-ServerDown' -Variables @{ ComputerNotLeaf = $script:ComputerNotLeaf; Self = $script:Self } `
-            -Context @{ Computers = @($Computers); Value = $Value; Title = $Title; Done = $Done; Lines = $Lines; Outcome = $Outcome; Detail = $Detail } -OnDone {
-            param($write, $read, $problem)
+        Start-WindowRead -Kind "$Action $([guid]::NewGuid())" -Command $command -Arguments $arguments -Functions $functions -Timeout $timeout -Variables $variables `
+            -Context @{ Computers = @($Computers); Value = $Value; Title = $Title; Done = $Done; Lines = $Lines; Outcome = $Outcome; Detail = $Detail; Progress = $progress; Timeout = $timeout; Sent = $sent } -OnDone {
+            param($write, $read, $problem, $timedOut)
             $script:search.Dialogs--
+            # Through Invoke-OnUserServer: what it looked up kept, and the change's own result.
+            if ($write.Sent -and $read) {
+                Merge-DomainCache $write.Sent $read.Cache
+                $read = $read.Result
+            }
             $answers = @(if ($read) { $read.Results })
             $report = @(if ($write.Lines) { $write.Lines }) + @(for ($i = 0; $i -lt $write.Computers.Count; $i++) {
                 $computer = $write.Computers[$i]
-                $why = if ($problem) { $problem } elseif ($i -ge $answers.Count) { Tr 'AD n''a rien renvoyé' } else { $answers[$i].Problem }
+                $answer = if ($timedOut) { $write.Progress[$i] } elseif ($i -lt $answers.Count) { $answers[$i] }
+                if ($timedOut -and -not $answer) { (Tr '⚠ {0} : {1}') -f $computer.ComputerName, (Get-WriteUnsureText $write.Timeout); continue }
+                $why = if ($answer) { $answer.Problem } elseif ($problem) { $problem } else { Tr 'AD n''a rien renvoyé' }
                 if ($why) { (Tr '✖ {0} : {1}') -f $computer.ComputerName, $why }
-                else { & $write.Done $computer $answers[$i] $write.Value }
+                else { & $write.Done $computer $answer $write.Value }
             })
             Update-ChangedRow
             if ($write.Detail) { Complete-ComputerDetailChange $write.Detail $report $write.Title $write.Outcome }
@@ -1459,7 +1515,7 @@ function Stop-OuLoad($State) {
     # (Remove-StoppedJob: one stuck on a DC may only end on its own).
     $job = $State.Job
     $State.Job = $null
-    if (-not $job -or $job.Done) { return }
+    if (-not $job -or $job['Done']) { return }
     if ($job.Handle.IsCompleted) { $job.Shell.Dispose(); return }
     $null = $job.Shell.BeginStop($null, $null)
     $script:search.Stopping.Add($job)
@@ -1472,7 +1528,7 @@ function Show-MoveDialog($Computers, [string[]]$Skipped, [hashtable]$Detail) {
     $dialog.Owner = if ($Detail) { $Detail.Window } else { $script:win }
     $dialog.Icon = $script:windowIcon
     Set-WindowChrome $dialog
-    $currentOUs = @($Computers | ForEach-Object { Get-ParentDN $_.OU } | Select-Object -Unique)
+    $currentOUs = @($Computers | ForEach-Object { Get-ParentDN $_.DistinguishedName } | Select-Object -Unique)
     $state = @{
         Dialog = $dialog; Tree = $dialog.FindName('move_tree'); Status = $dialog.FindName('move_status')
         Computers = $Computers; Domain = $Computers[0].Domain; Items = @{}; Target = $null; Job = $null; Pick = $false
@@ -1595,7 +1651,7 @@ function Initialize-OuDialog($State) {
             $ok.IsEnabled = $false
             return
         }
-        $already = @($state.Computers | Where-Object { (Get-ParentDN $_.OU) -eq $state.Target }).Count
+        $already = @($state.Computers | Where-Object { (Get-ParentDN $_.DistinguishedName) -eq $state.Target }).Count
         $note = if ($already -eq $state.Computers.Count) { ' ' + (Tr '(ils y sont déjà)') } elseif ($already) { ' ' + ((Tr '({0} y sont déjà)') -f $already) }
         $destination = Tr 'Destination : {0}'
         Set-MoveTarget $state.Dialog (($destination -f (Get-OUPath "CN=x,$($state.Target)")) + $note) (($destination -f (Get-ShortPath "CN=x,$($state.Target)")) + $note) $true
@@ -1614,8 +1670,8 @@ function Initialize-OuDialog($State) {
 }
 
 function Set-RowLocation($Row, [string]$DistinguishedName) {
-    Save-RowChange $Row.OU 'DistinguishedName' $DistinguishedName
-    $Row.OU = $DistinguishedName
+    Save-RowChange $Row.DistinguishedName 'DistinguishedName' $DistinguishedName
+    $Row.DistinguishedName = $DistinguishedName
     $Row.ShortPath = Get-ShortPath $DistinguishedName
     $Row.OUPath = Get-OUPath $DistinguishedName
     Update-RowText $Row
@@ -1624,13 +1680,13 @@ function Set-RowLocation($Row, [string]$DistinguishedName) {
 function Move-Computer($Computers, [string]$Target, [hashtable]$Detail) {
     # Moves each computer to the OU, in its domain, then updates its row (Emplacement column). $Detail: from its
     # Propriétés (Start-ComputerWrite).
-    $there = @($Computers | Where-Object { (Get-ParentDN $_.OU) -eq $Target } | ForEach-Object { (Tr '✔ {0} (déjà dans cette OU)') -f $_.ComputerName })
-    $moving = @($Computers | Where-Object { (Get-ParentDN $_.OU) -ne $Target })
+    $there = @($Computers | Where-Object { (Get-ParentDN $_.DistinguishedName) -eq $Target } | ForEach-Object { (Tr '✔ {0} (déjà dans cette OU)') -f $_.ComputerName })
+    $moving = @($Computers | Where-Object { (Get-ParentDN $_.DistinguishedName) -ne $Target })
     # « Déplacé » only when one was: all already there, the notice keeps the action's name.
     Start-ComputerWrite 'Move' $moving $Target (Tr 'Déplacer') {
         param($computer, $result, $value)
         $from = $computer.ShortPath
-        Set-RowLocation $computer "$(($computer.OU -split '(?<!\\),', 2)[0]),$value"
+        Set-RowLocation $computer "$(($computer.DistinguishedName -split '(?<!\\),', 2)[0]),$value"
         (Tr '✔ {0} : {1} → {2}') -f $computer.ComputerName, $from, $computer.ShortPath
     } $there -Outcome $(if ($moving.Count) { (Tr 'Déplacé'), (Tr 'Déplacés') }) -Detail $Detail
 }
@@ -1734,7 +1790,10 @@ $actions.Enable = {
 
 $actions.Disable = {
     # Only the enabled ones (Request-ComputerDisable).
-    Request-ComputerDisable @(Get-SelectedComputer)
+    # Stored first, as everywhere: @() around the call would make the whole selection one item, which the guard (the
+    # domain controllers, this computer) wouldn't know.
+    $selected = Get-SelectedComputer
+    Request-ComputerDisable $selected
 }
 
 $actions.BitLocker = {
@@ -1783,7 +1842,7 @@ $actions.Remove = {
             Start-ComputerWrite 'Remove' $state.Selected $null (Tr "Supprimer de l'AD") {
                 param($computer, $result)
                 $script:results.Rows.Remove($computer) | Out-Null
-                Save-RowChange $computer.OU 'Removed' $true
+                Save-RowChange $computer.DistinguishedName 'Removed' $true
                 if ($result.Children -eq 1) { (Tr '✔ {0} (avec 1 objet enfant)') -f $computer.ComputerName }
                 elseif ($result.Children -gt 1) { (Tr '✔ {0} (avec {1} objets enfants)') -f $computer.ComputerName, $result.Children }
                 else { "✔ $($computer.ComputerName)" }
@@ -1804,7 +1863,11 @@ $actions.Groups = {
 $actions.GroupsAdd = { Show-SelectionGroupAdd @(ConvertTo-GroupMember (Get-SelectedComputer) 'Computer') }
 $actions.GroupsRemove = { Show-SelectionGroupRemove @(ConvertTo-GroupMember (Get-SelectedComputer) 'Computer') }
 
-$actions.Move = { Request-ComputerMove @(Get-SelectedComputer) }
+$actions.Move = {
+    # Stored first, as for Désactiver: the guard reads the computers one by one.
+    $selected = Get-SelectedComputer
+    Request-ComputerMove $selected
+}
 
 $actions.NextName = {
     # Prochain nom… (NextName.ps1) on the series of the computer selected: its name, which the window turns into a
@@ -1837,11 +1900,10 @@ $actions.CopyOneLine = {
 }
 
 $actions.CopyRows = {
-    # The rows as Exporter writes them, a tab between the columns, to paste into Excel or a ticket.
+    # The rows as Exporter writes them, the columns shown, a tab between them, to paste into Excel or a ticket.
     $selected = Get-SelectedComputer
     if (-not $selected.Count) { return }
-    $lines = foreach ($line in @(Get-ComputerExportRow $selected)) { Format-RowLine @($line.PSObject.Properties | ForEach-Object { $_.Value }) }
-    Set-Clipboard -Value (@($lines) -join [Environment]::NewLine)
+    Set-Clipboard -Value (Get-RowClipboardText $selected (Get-ComputerExportField $dataGrid.Columns))
     $selectionText.Text = if ($selected.Count -eq 1) { Tr '1 ligne copiée' } else { (Tr '{0} lignes copiées') -f $selected.Count }
 }
 

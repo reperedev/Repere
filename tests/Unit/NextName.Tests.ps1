@@ -535,3 +535,37 @@ Describe 'Prochainnom.json' {
         ($recent | ForEach-Object { Get-NameFormatText $_ }) -join ',' | Should -BeExactly 'B-#,I-#,H-#,G-#,F-#,E-#,D-#,C-#'
     }
 }
+
+Describe 'SCCM''s failures known by their codes, whatever Windows'' language' {
+    BeforeAll { $script:SavedSccmModule = $script:FakeSccmModule }
+    AfterAll { $script:FakeSccmModule = $script:SavedSccmModule }
+
+    It '<Case>' -ForEach @(
+        @{ Case = 'a site that is not on its server (WMI''s invalid namespace)'; Message = 'Ungültiger Namespace'; Code = '0x8004100E'; Reason = 'le site DEM est introuvable sur sccm.demo.local' }
+        # Without « RPC » in its words: the old text match would have found it there.
+        @{ Case = 'a server that does not answer (RPC)'; Message = 'Der Server ist nicht verfügbar.'; Code = '0x800706BA'; Reason = 'sccm.demo.local ne répond pas' }
+    ) {
+        # A console that fails as a German Windows says it: neither the English nor the French text Repère knows.
+        $module = Join-Path $TestDrive "GermanSccm-$($Code).psm1"
+        Set-Content -LiteralPath $module -Encoding utf8BOM -Value @"
+function Get-PSDrive { [CmdletBinding()] param([string]`$Name, [string]`$PSProvider) }
+function New-PSDrive { [CmdletBinding()] param([string]`$Name, [string]`$PSProvider, [string]`$Root, [string]`$Scope) throw [System.Runtime.InteropServices.COMException]::new('$Message', $Code) }
+Export-ModuleMember -Function Get-PSDrive, New-PSDrive
+"@
+        $script:FakeSccmModule = $module
+        $check = Get-SccmCheck @{ Site = 'DEM'; Server = 'sccm.demo.local' } 'ORD-'
+        $check.Checked | Should -BeFalse
+        $check.Reason | Should -BeExactly $Reason
+    }
+}
+
+Describe 'A read that calls Get-SccmCheck' {
+    It 'Is given Get-ErrorKind too, which a runspace does not have' {
+        foreach ($file in 'NextName.ps1', 'SettingsWindow.ps1') {
+            $ast = Get-RepereScriptAst (Join-Path $script:RepereSource $file)
+            $reads = @($ast.FindAll({ param($node) $node -is [System.Management.Automation.Language.CommandAst] -and $node.GetCommandName() -eq 'Start-BackgroundRead' -and $node.Extent.Text -match "'Get-SccmCheck'" }, $true))
+            $reads.Count | Should -Be 1 -Because $file
+            $reads[0].Extent.Text | Should -Match "'Get-ErrorKind'"
+        }
+    }
+}

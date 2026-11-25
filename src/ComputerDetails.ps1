@@ -255,7 +255,7 @@ function Get-ComputerDetailTarget($State) {
     # with it), else the window's copy.
     $dn = [string]$State.Row.DistinguishedName
     $rows = if (Test-Path variable:script:results) { @($script:results.Rows) } else { @() }
-    $shown = $rows | Where-Object { [string]::Equals([string]$_.OU, $dn, [System.StringComparison]::OrdinalIgnoreCase) } | Select-Object -First 1
+    $shown = $rows | Where-Object { [string]::Equals([string]$_.DistinguishedName, $dn, [System.StringComparison]::OrdinalIgnoreCase) } | Select-Object -First 1
     if ($shown) { $State.Row.Computer = $shown }
     $State.Row.Computer
 }
@@ -300,7 +300,7 @@ function Complete-ComputerDetailChange($State, [string[]]$Lines, [string]$Title,
     # once it has read the computer again. Moved, it's known by its new DN. Closed meanwhile: reported as the page's.
     if ($State['Closed']) { Show-ActionReport $Lines $Title -Outcome $Outcome; return }
     $row = $State.Row
-    $row.DistinguishedName = [string]$row.Computer.OU
+    $row.DistinguishedName = [string]$row.Computer.DistinguishedName
     $key = Get-DetailWindowKey 'computer_detail' $row
     if ($key -ne $State.Key) {
         $script:DetailWindows.Remove($State.Key)
@@ -312,17 +312,40 @@ function Complete-ComputerDetailChange($State, [string[]]$Lines, [string]$Title,
     Update-ComputerDetail $State
 }
 
-function Invoke-ComputerDetailChange($State, [string]$Title, [scriptblock]$Change, [string]$Done) {
-    # A change the window makes itself (Emplacement…, Géré par…, the protection, its groups): & $Change <server> on the
-    # DC it reads from (Invoke-UserChange: the PDC, or the DC in its place), then the window read again, $Done in its
-    # toast; or why not, in a dialog over it.
-    $name = $State.Row.Name
-    try {
-        $null = Invoke-UserChange $State.Row.Domain $Change
-        $State.NoticeAfterRead = $Done
+function Invoke-ComputerDetailChange($State, [string]$Title, [string]$Command, [hashtable]$Parameters, [string]$Done) {
+    # A change the window makes itself (Emplacement…, Géré par…, the protection): & $Command -Server <DC> @Parameters,
+    # in the background (Invoke-DetailChange, Start-ADWrite), on the DC it reads from (Invoke-UserChange: the PDC, or
+    # the DC in its place). The window stays usable, its pointer saying it runs; the same change asked again
+    # meanwhile is ignored. Then Complete-ComputerDetailWrite.
+    $row = $State.Row
+    $null = Start-ADWrite -Keys @("$Title|$($row.Domain)|$($row.DistinguishedName)") -Command 'Invoke-DetailChange' -Arguments @([string]$row.Domain, $Command, $Parameters) `
+        -Window $State.Window -Context @{ State = $State; Title = $Title; Done = $Done } -OnDone {
+        param($write, $outcome)
+        Complete-ComputerDetailWrite $write.State $write.Title $write.Done (Get-WriteAnswer $outcome 0) $outcome.Timeout
     }
-    catch { Show-Dialog -Title $Title -Message ((Tr '✖ {0} : {1}') -f $name, $_.Exception.Message) -Owner $State.Window }
-    Update-ComputerDetail $State
+}
+
+function Invoke-DetailChange([string]$Domain, [string]$Command, [hashtable]$Parameters) {
+    # On a search runspace: & $Command -Server <DC> @Parameters, for an object of $Domain, on the DC its Propriétés
+    # reads from (Invoke-UserChange). Its Problem (Add-WriteProgress, as step 0), $null when done.
+    $problem = try {
+        $null = Invoke-UserChange $Domain { param($server) & $Command -Server $server @Parameters -ErrorAction Stop }
+        $null
+    }
+    catch { $_.Exception.Message }
+    Add-WriteProgress 0 @{ Problem = $problem }
+}
+
+function Complete-ComputerDetailWrite($State, [string]$Title, [string]$Done, $Answer, [int]$Timeout) {
+    # Invoke-ComputerDetailChange's change: done, $Done in the toast once the window has read the computer again; or
+    # why not, in a dialog over it; or perhaps done, its DC not having answered in time, which the dialog says to
+    # check. Closed meanwhile: a failure is said over the main window.
+    $name = $State.Row.Name
+    $owner = Get-DetailOwner $State
+    if ($Answer.Unsure) { Show-Dialog -Title $Title -Icon 'warning' -Tone 'warn' -Message ((Tr '⚠ {0} : {1}') -f $name, (Get-WriteUnsureText $Timeout)) -Owner $owner }
+    elseif ($Answer.Problem) { Show-Dialog -Title $Title -Message ((Tr '✖ {0} : {1}') -f $name, $Answer.Problem) -Owner $owner }
+    elseif (-not $State['Closed']) { $State.NoticeAfterRead = $Done }
+    if (-not $State['Closed']) { Update-ComputerDetail $State }
 }
 
 function Show-ComputerLocationDialog($State) {
@@ -332,11 +355,9 @@ function Show-ComputerLocationDialog($State) {
         param($dialog)
         $place = "$($dialog.TextBox.Text)".Trim()
         $dn = [string]$dialog.Detail.Row.DistinguishedName
-        Invoke-ComputerDetailChange $dialog.Detail (Tr 'Emplacement physique') {
-            param($server)
-            if ($place) { Set-ADComputer -Server $server -Identity $dn -Location $place -ErrorAction Stop }
-            else { Set-ADComputer -Server $server -Identity $dn -Clear location -ErrorAction Stop }
-        } $(if ($place) { Tr 'Emplacement physique enregistré.' } else { Tr 'Emplacement physique effacé.' })
+        $change = if ($place) { @{ Identity = $dn; Location = $place } } else { @{ Identity = $dn; Clear = 'location' } }
+        Invoke-ComputerDetailChange $dialog.Detail (Tr 'Emplacement physique') 'Set-ADComputer' $change `
+            $(if ($place) { Tr 'Emplacement physique enregistré.' } else { Tr 'Emplacement physique effacé.' })
     }
 }
 
@@ -354,13 +375,12 @@ function Show-ComputerManagerDialog($State) {
         if (-not $picked) { return }
         $manager = [string]$picked.DistinguishedName
         $dn = [string]$dialog.Detail.Row.DistinguishedName
-        Invoke-ComputerDetailChange $dialog.Detail (Tr 'Géré par') { param($server) Set-ADComputer -Server $server -Identity $dn -ManagedBy $manager -ErrorAction Stop } `
-            ((Tr 'Géré par {0}.') -f $picked.Name)
+        Invoke-ComputerDetailChange $dialog.Detail (Tr 'Géré par') 'Set-ADComputer' @{ Identity = $dn; ManagedBy = $manager } ((Tr 'Géré par {0}.') -f $picked.Name)
     } -OnAlt {
         param($dialog)
         $dialog.List.Parent.Parent.Parent.Tag.Timer.Stop()
         $dn = [string]$dialog.Detail.Row.DistinguishedName
-        Invoke-ComputerDetailChange $dialog.Detail (Tr 'Géré par') { param($server) Set-ADComputer -Server $server -Identity $dn -Clear managedBy -ErrorAction Stop } (Tr 'Géré par : effacé.')
+        Invoke-ComputerDetailChange $dialog.Detail (Tr 'Géré par') 'Set-ADComputer' @{ Identity = $dn; Clear = 'managedBy' } (Tr 'Géré par : effacé.')
     }
 }
 
@@ -377,7 +397,7 @@ function Invoke-ComputerProtection($State) {
 
 function Set-ComputerDetailProtection($State, [bool]$Protect) {
     $dn = [string]$State.Row.DistinguishedName
-    Invoke-ComputerDetailChange $State (Tr 'Protection') { param($server) Set-ADObject -Server $server -Identity $dn -ProtectedFromAccidentalDeletion $Protect -ErrorAction Stop } `
+    Invoke-ComputerDetailChange $State (Tr 'Protection') 'Set-ADObject' @{ Identity = $dn; ProtectedFromAccidentalDeletion = $Protect } `
         $(if ($Protect) { Tr 'Protégé contre la suppression accidentelle.' } else { Tr 'Plus protégé contre la suppression accidentelle.' })
 }
 
@@ -421,28 +441,44 @@ function Remove-ComputerGroup($State) {
 }
 
 function Set-ComputerGroupList($State, $Groups, [bool]$Add) {
-    # The computer into ($Add) or out of each group, one at a time so one refused doesn't stop the others; then the
-    # window read again, a notice of those that took, and the refusals. A group of another domain gets the computer as
-    # read in its own domain, which that domain's DC can't find by DN (Get-ComputerAsMember).
+    # The computer into ($Add) or out of each group, one at a time so one refused doesn't stop the others, in the
+    # background (Invoke-UserGroupWrite, Start-ADWrite): the window usable meanwhile, a group already being changed for
+    # it left out. A group of another domain gets the computer as read in its own domain, which that domain's DC can't
+    # find by DN (Get-ComputerAsMember). Then Complete-ComputerGroupWrite.
     $row = $State.Row
-    $done = [System.Collections.Generic.List[string]]::new()
-    $account = @{}
-    $failed = foreach ($group in $Groups) {
-        try {
-            $at, $member = Get-ComputerAsMember $row $group.DistinguishedName $account
-            $groupDN = [string]$group.DistinguishedName
-            $null = if ($Add) { Invoke-UserChange $row.Domain { param($server) Add-ADGroupMember -Server $server -Identity $groupDN -Members $member -ErrorAction Stop } $at }
-                    else { Invoke-UserChange $row.Domain { param($server) Remove-ADGroupMember -Server $server -Identity $groupDN -Members $member -Confirm:$false -ErrorAction Stop } $at }
-            $done.Add($group.Name)
-        }
-        catch {
-            if ($Add) { (Tr '✖ {0} : non ajouté à {1} ({2})') -f $row.Name, $group.Name, $_.Exception.Message }
-            else { (Tr '✖ {0} : non retiré de {1} ({2})') -f $row.Name, $group.Name, $_.Exception.Message }
-        }
+    $key = { param($group) "Group|$($row.Domain)|$($row.DistinguishedName)|$($group.DistinguishedName)" }
+    $pending = @($Groups | Where-Object { -not (Test-ADWriteBusy (& $key $_)) })
+    if (-not $pending.Count) { return }
+    $copies = @($pending | ForEach-Object { [pscustomobject]@{ Name = [string]$_.Name; DistinguishedName = [string]$_.DistinguishedName } })
+    $computer = [pscustomobject]@{ Name = [string]$row.Name; Domain = [string]$row.Domain; DistinguishedName = [string]$row.DistinguishedName }
+    $null = Start-ADWrite -Keys @($pending | ForEach-Object { & $key $_ }) -Command 'Invoke-UserGroupWrite' -Arguments @($computer, $copies, $Add, 'Get-ComputerAsMember') `
+        -Functions 'Get-ComputerAsMember', 'Get-DomainOfDN' -Count $copies.Count -Window $State.Window -Context @{ State = $State; Groups = $copies; Add = $Add } -OnDone {
+        param($write, $outcome)
+        Complete-ComputerGroupWrite $write.State $write.Groups $write.Add $outcome
     }
-    if ($done.Count) { $State.NoticeAfterRead = $(if ($Add) { Tr '{0} ajouté à {1}.' } else { Tr '{0} retiré de {1}.' }) -f $row.Name, (Join-FrenchList $done) }
-    Update-ComputerDetail $State
-    if ($failed) { Show-Dialog -Title $(if ($Add) { Tr 'Ajouter à un groupe' } else { Tr 'Retirer du groupe' }) -Message (@($failed) -join "`n") -Owner $State.Window }
+}
+
+function Complete-ComputerGroupWrite($State, $Groups, [bool]$Add, $Outcome) {
+    # Set-ComputerGroupList's change: the window read again, a notice of the groups that took, and a dialog of the
+    # others, refused or perhaps done (the DC didn't answer in time: Get-WriteAnswer). Closed meanwhile: said over the
+    # main window.
+    $name = $State.Row.Name
+    $done = [System.Collections.Generic.List[string]]::new()
+    $lines = for ($i = 0; $i -lt $Groups.Count; $i++) {
+        $group = $Groups[$i]
+        $answer = Get-WriteAnswer $Outcome $i
+        if ($answer.Unsure) { (Tr '⚠ {0} : {1}') -f $group.Name, (Get-WriteUnsureText $Outcome.Timeout) }
+        elseif ($answer.Problem) {
+            $format = if ($Add) { Tr '✖ {0} : non ajouté à {1} ({2})' } else { Tr '✖ {0} : non retiré de {1} ({2})' }
+            $format -f $name, $group.Name, $answer.Problem
+        }
+        else { $done.Add($group.Name) }
+    }
+    if (-not $State['Closed']) {
+        if ($done.Count) { $State.NoticeAfterRead = $(if ($Add) { Tr '{0} ajouté à {1}.' } else { Tr '{0} retiré de {1}.' }) -f $name, (Join-FrenchList $done) }
+        Update-ComputerDetail $State
+    }
+    if ($lines) { Show-Dialog -Title $(if ($Add) { Tr 'Ajouter à un groupe' } else { Tr 'Retirer du groupe' }) -Message (@($lines) -join "`n") -Owner (Get-DetailOwner $State) }
 }
 
 function Get-ComputerAsMember($Row, [string]$Group, [hashtable]$Account) {
@@ -468,8 +504,9 @@ function Get-ComputerDetailText($State) {
 }
 
 function Get-ComputerDetailRead($State) {
-    # What Start-DetailRead runs for a computer: read where its changes go (Get-UserServer), chosen on this thread.
-    @{ Command = 'Read-ComputerDetail'; Arguments = @($State.Row, (Get-UserServer $State.Row.Domain))
+    # What Start-DetailRead runs for a computer: read where its changes go (Get-UserServer, argument 1), looked up on
+    # the read's runspace when it isn't known yet (Start-UserServerRead).
+    @{ Command = 'Read-ComputerDetail'; Arguments = @($State.Row, $null); Domain = $State.Row.Domain; At = 1
        Functions = 'Get-ObjectGroup', 'Read-TokenGroup', 'Get-DomainOfSid', 'Get-DomainOfDN', 'Get-LdapText', 'Test-ServerDown', 'Get-DomainFallback' }
 }
 
@@ -477,7 +514,7 @@ function Show-ComputerDetail($Computer, $Owner, $Icon) {
     # The window opens at once, « Lecture… »; the computer is read in the background. A row of the page ($Computer):
     # the window keeps a copy, and acts on the page's row while the grid lists it (Get-ComputerDetailTarget).
     $row = [pscustomobject]@{
-        Name = [string]$Computer.ComputerName; Domain = [string]$Computer.Domain; DistinguishedName = [string]$Computer.OU; Computer = $Computer.PSObject.Copy()
+        Name = [string]$Computer.ComputerName; Domain = [string]$Computer.Domain; DistinguishedName = [string]$Computer.DistinguishedName; Computer = $Computer.PSObject.Copy()
     }
     Show-DetailWindow @{ Row = $row; Detail = $null; Update = 'Update-ComputerDetail'; Read = 'Get-ComputerDetailRead'; CopyText = 'Get-ComputerDetailText' } `
         'computer_detail' ((Tr 'Propriétés de {0}') -f $row.Name) $Owner $Icon -Glyph 'monitor'

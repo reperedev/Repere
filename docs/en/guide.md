@@ -26,7 +26,7 @@ The window has three pages, **Computers**, **Users** and **Groups**, which all w
 2. the **search type** (by name, by description…);
 3. the **search box**, then Enter or **Search**.
 
-Results show in a grid. Click a column to sort by it, and filter it (**Filters**); **Columns** picks which ones show, and **Export** saves the results shown as CSV. The ↓ arrow in the search box brings back your **recent searches**.
+Results show in a grid. Click a column to sort by it, and filter it (**Filters**); **Columns** picks which ones show, and **Export** saves the results shown as CSV: the columns shown, in their order, with the dates in full and each row's distinguished name last. The ↓ arrow in the search box brings back your **recent searches**.
 
 A search that finds nothing says where it searched and suggests what to do next, such as **Search all domains**. What happens in the background (an action that finished, a computer that can't be reached) shows in a notification at the bottom of the window.
 
@@ -58,7 +58,7 @@ Select one or more computers, then right-click (or use the bar above the results
 - **Remote tools**: Remote Desktop, take control, signed-in users, specifications, and the usual consoles (Computer Management, C$, Remote PowerShell, Services, Event Viewer, force policy update).
 - **Restart**: restart with a message to the person, or cancel a planned restart.
 
-The **Copy** submenu copies the name, the names on one line (separated by commas) or the whole rows.
+The **Copy** submenu copies the name, the names on one line (separated by commas) or the rows, with the columns Export saves.
 
 ![The right-click menu, with the remote tools](images/menu.png)
 

@@ -32,7 +32,7 @@ BeforeAll {
         # The window's rows for one computer whose keys are $Keys, as Clés BitLocker… shows them.
         $script:TestKeys = $Keys
         Mock Get-ADObject { $script:TestKeys }
-        $rows = (Read-BitLockerRow @([pscustomobject]@{ ComputerName = 'ORD-50'; OU = $script:Computer; Domain = 'demo.local' })).Rows
+        $rows = (Read-BitLockerRow @([pscustomobject]@{ ComputerName = 'ORD-50'; DistinguishedName = $script:Computer; Domain = 'demo.local' })).Rows
         Update-BitLockerStatus $rows
         , $rows
     }
@@ -124,7 +124,7 @@ Describe 'Get-BitLockerKey' {
             New-TestKey '2026-03-04T10:15:50-05:00' 'BBBBBBBB-0000-0000-0000-000000000002' $script:VolumeC
         )
         Mock Get-ADObject { $script:TestKeys }
-        $text = Format-BitLockerKey @([pscustomobject]@{ ComputerName = 'ORD-50'; OU = $script:Computer; Domain = 'demo.local' })
+        $text = Format-BitLockerKey @([pscustomobject]@{ ComputerName = 'ORD-50'; DistinguishedName = $script:Computer; Domain = 'demo.local' })
         $text.IndexOf('BBBBBBBB') | Should -BeLessThan $text.IndexOf('AAAAAAAA')
     }
 }

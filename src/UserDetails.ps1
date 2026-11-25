@@ -837,11 +837,11 @@ function Get-UserEditChange([string]$Card, $User, [hashtable]$Values, [string]$L
 }
 
 function Save-UserEditChange($Row, $Change) {
-    # Enregistrer: a card's changes (Get-UserEditChange) in one Set-ADUser, on the DC the window reads from
-    # (Invoke-UserChange). AD writes a Set-ADUser whole or not at all: when it refuses one (rights on one attribute, a
-    # value out of range), each field is sent alone, so those AD takes are saved and those it refuses named. Saved: the
-    # ids written; Failed: each field refused, with its Id, Label and Problem. A DC that doesn't answer (Invoke-UserChange
-    # has tried another already): nothing saved, each field failed for it.
+    # Enregistrer, on a search runspace (Save-UserCard): a card's changes (Get-UserEditChange) in one Set-ADUser, on the
+    # DC the window reads from (Invoke-UserChange). AD writes a Set-ADUser whole or not at all: when it refuses one
+    # (rights on one attribute, a value out of range), each field is sent alone, so those AD takes are saved and those
+    # it refuses named. Saved: the ids written; Failed: each field refused, with its Id, Label and Problem. A DC that
+    # doesn't answer (Invoke-UserChange has tried another already): nothing saved, each field failed for it.
     $whole = @{}
     if ($Change.Replace.Count) { $whole.Replace = $Change.Replace }
     if ($Change.Clear.Count) { $whole.Clear = [string[]]$Change.Clear }
@@ -1027,9 +1027,8 @@ function Undo-UserCardEdit($State) {
 
 function Save-UserCard($State, [string]$Card) {
     # Enregistrer: the card's changes checked first (Get-UserEditChange: nothing is sent while a value is wrong), then
-    # sent (Save-UserEditChange). All saved, the card shows its values again; a field refused, the card stays in its
-    # edit with what was typed, its error naming each field AD refused, and those it saved. Then the window reads the
-    # account again, and the page's row follows (Update-UserDetail).
+    # sent in the background (Save-UserEditChange, Start-ADWrite), the window usable meanwhile; Enregistrer again while
+    # they're sent is ignored. Then Complete-UserCardSave.
     Read-UserCardEdit $State
     $edit = $State.Edits[$Card]
     if (-not $edit -or -not $State.Detail) { return }
@@ -1046,21 +1045,54 @@ function Save-UserCard($State, [string]$Card) {
         Show-DetailNotice $State (Tr 'Rien à enregistrer : aucune valeur changée.')
         return
     }
-    $result = Save-UserEditChange $row $change
-    if (-not $result.Failed.Count) {
-        Stop-UserCardEdit $State $Card
-        $notice = (Tr '{0} : enregistré ({1}).') -f $row.Login, (Join-FrenchList @($change.Fields | ForEach-Object { $_.Label.ToLower($script:UserDetailCulture) }))
+    $null = Start-ADWrite -Keys @("Edit|$($row.Domain)|$($row.DistinguishedName)|$Card") -Command 'Save-UserEditChange' -Arguments @((ConvertTo-WriteUser $row), $change) `
+        -Window $State.Window -Context @{ State = $State; Card = $Card; Change = $change } -OnDone {
+        param($write, $outcome)
+        Complete-UserCardSave $write.State $write.Card $write.Change $outcome
+    }
+}
+
+function Complete-UserCardSave($State, [string]$Card, $Change, $Outcome) {
+    # Save-UserCard's changes sent. All saved, the card shows its values again. A field refused, the card stays in its
+    # edit with what was typed, its error naming each field AD refused, and those it saved. The DC didn't answer in
+    # time: the card stays in its edit, its error saying the values may have been saved. Then the window reads the
+    # account again, and the page's row follows (Update-UserDetail). Closed meanwhile: only a failure is said, over
+    # the main window.
+    $row = $State.Row
+    $result = if (-not $Outcome.Problem) { $Outcome.Result }
+    $failed = if ($result) { @($result.Failed) } elseif (-not $Outcome.TimedOut) { @($Change.Fields | ForEach-Object { @{ Id = $_.Id; Label = $_.Label; Problem = $Outcome.Problem } }) }
+    if ($State['Closed']) {
+        if ($Outcome.TimedOut) { Show-Dialog -Title (Tr 'Enregistrer') -Message ((Tr '⚠ {0} : {1}') -f $row.Login, (Get-WriteUnsureText $Outcome.Timeout)) }
+        elseif (@($failed).Count) { Show-Dialog -Title (Tr 'Enregistrer') -Message (@($failed | ForEach-Object { (Tr '{0} : non enregistré ({1})') -f $_.Label, "$($_.Problem)".TrimEnd('.') }) -join "`n") }
+        return
+    }
+    # Annuler while they were sent: the card is no longer edited, and only the window read again says what was saved.
+    $edit = $State.Edits[$Card]
+    if ($Outcome.TimedOut) {
+        if ($edit) {
+            $edit.Error = (Tr '⚠ {0} : {1}') -f $row.Login, (Get-WriteUnsureText $Outcome.Timeout)
+            $edit.Bad = @()
+            Show-UserCardEdit $State $Card
+        }
+        else { Show-Dialog -Title (Tr 'Enregistrer') -Message ((Tr '⚠ {0} : {1}') -f $row.Login, (Get-WriteUnsureText $Outcome.Timeout)) -Owner $State.Window }
+    }
+    elseif (-not @($failed).Count) {
+        if ($edit) { Stop-UserCardEdit $State $Card }
+        $notice = (Tr '{0} : enregistré ({1}).') -f $row.Login, (Join-FrenchList @($Change.Fields | ForEach-Object { $_.Label.ToLower($script:UserDetailCulture) }))
         # Repère writes the attribute only, as a script would: the folder itself is the file server's.
-        if ($change.Replace.ContainsKey('homeDirectory')) { $notice += ' ' + (Tr "Le dossier de base n'est pas créé : créez-le sur le serveur, avec les droits de l'utilisateur.") }
+        if ($Change.Replace.ContainsKey('homeDirectory')) { $notice += ' ' + (Tr "Le dossier de base n'est pas créé : créez-le sur le serveur, avec les droits de l'utilisateur.") }
         $State.NoticeAfterRead = $notice
     }
     else {
-        $lines = @(foreach ($refused in $result.Failed) { (Tr '{0} : non enregistré ({1})') -f $refused.Label, "$($refused.Problem)".TrimEnd('.') })
-        $saved = @($change.Fields | Where-Object { $result.Saved -contains $_.Id } | ForEach-Object { $_.Label })
+        $lines = @(foreach ($refused in $failed) { (Tr '{0} : non enregistré ({1})') -f $refused.Label, "$($refused.Problem)".TrimEnd('.') })
+        $saved = @($Change.Fields | Where-Object { $result -and $result.Saved -contains $_.Id } | ForEach-Object { $_.Label })
         if ($saved.Count) { $lines += (Tr 'Enregistré : {0}.') -f (Join-FrenchList $saved) }
-        $edit.Error = $lines -join "`n"
-        $edit.Bad = @($result.Failed | ForEach-Object { $_.Id })
-        Show-UserCardEdit $State $Card
+        if ($edit) {
+            $edit.Error = $lines -join "`n"
+            $edit.Bad = @($failed | ForEach-Object { $_.Id })
+            Show-UserCardEdit $State $Card
+        }
+        else { Show-Dialog -Title (Tr 'Enregistrer') -Message ($lines -join "`n") -Owner $State.Window }
     }
     Update-UserDetail $State
 }
@@ -1287,28 +1319,17 @@ function Update-UserGroupPick($State) {
 }
 
 function Invoke-UserDetailUnlock($State) {
-    $row = $State.Row
-    try {
-        $null = Invoke-UserChange $row.Domain { param($server) Unlock-ADAccount -Server $server -Identity $row.DistinguishedName -ErrorAction Stop }
-        Show-DetailNotice $State ((Tr '{0} déverrouillé.') -f $row.Login)
-    }
-    catch {
-        Show-Dialog -Title (Tr 'Déverrouiller') -Message ((Tr '✖ {0} : {1}') -f $row.Login, $_.Exception.Message) -Owner $State.Window
-    }
-    Update-UserDetail $State
+    # In the background (Start-UserDetailWrite), then the window reads the account again.
+    Start-UserDetailWrite $State 'Unlock' (Tr 'Déverrouiller') -Done ((Tr '{0} déverrouillé.') -f $State.Row.Login)
 }
 
 function Invoke-UserDetailToggle($State) {
     # Activer, or Désactiver… after the page's confirmation (Annuler the default), with the page's rule: never the
-    # account running Repère (Test-SelfAccount). Then the window reads the account again, and the page's row follows.
+    # account running Repère (Test-SelfAccount). In the background (Start-UserDetailWrite), then the window reads the
+    # account again, and the page's row follows.
     $row = $State.Row
     if (-not $State.Detail.User.Enabled) {
-        try {
-            $null = Invoke-UserChange $row.Domain { param($server) Enable-ADAccount -Server $server -Identity $row.DistinguishedName -ErrorAction Stop }
-            $State.NoticeAfterRead = (Tr '{0} activé.') -f $row.Login
-        }
-        catch { Show-Dialog -Title (Tr 'Activer') -Message ((Tr '✖ {0} : {1}') -f $row.Login, $_.Exception.Message) -Owner $State.Window }
-        Update-UserDetail $State
+        Start-UserDetailWrite $State 'Enable' (Tr 'Activer') -Done ((Tr '{0} activé.') -f $row.Login) -AfterRead
         return
     }
     if (Test-SelfAccount $row.Login $row.Domain) {
@@ -1321,13 +1342,7 @@ function Invoke-UserDetailToggle($State) {
         -OkText (Tr 'Désactiver') -CancelIsDefault -State @{ Detail = $State } -OnOk {
         param($dialog)
         $state = $dialog.Detail
-        $row = $state.Row
-        try {
-            $null = Invoke-UserChange $row.Domain { param($server) Disable-ADAccount -Server $server -Identity $row.DistinguishedName -ErrorAction Stop }
-            $state.NoticeAfterRead = (Tr '{0} désactivé.') -f $row.Login
-        }
-        catch { Show-Dialog -Title (Tr 'Désactiver') -Message ((Tr '✖ {0} : {1}') -f $row.Login, $_.Exception.Message) -Owner $state.Window }
-        Update-UserDetail $state
+        Start-UserDetailWrite $state 'Disable' (Tr 'Désactiver') -Done ((Tr '{0} désactivé.') -f $state.Row.Login) -AfterRead
     }
 }
 
@@ -1381,26 +1396,20 @@ function Show-UserExpiryDialog($State) {
         $state = $dialog.Detail
         $row = $state.Row
         $content = $dialog.Content
-        $notice = $null
-        try {
-            if ($content.FindName('expiry_never').IsChecked) {
-                $null = Invoke-UserChange $row.Domain { param($server) Clear-ADAccountExpiration -Server $server -Identity $row.DistinguishedName -ErrorAction Stop }
-                $notice = (Tr "Le compte de {0} n'expire plus.") -f $row.Login
-            }
-            else {
-                $day = $content.FindName('expiry_date').SelectedDate
-                if (-not $day) { throw (Tr 'aucune date choisie') }
-                if ($day.Date -lt (Get-Date).Date) { throw ((Tr 'le {0} est passé') -f (Format-TextDate $day -Day)) }
-                $null = Invoke-UserChange $row.Domain { param($server) Set-ADAccountExpiration -Server $server -Identity $row.DistinguishedName -DateTime $day.Date.AddDays(1) -ErrorAction Stop }
-                $notice = (Tr 'Le compte de {0} expire à la fin du {1}.') -f $row.Login, (Format-TextDate $day -Day)
-            }
+        $title = Tr 'Expiration du compte'
+        $failed = Tr '✖ {0} : expiration non changée ({1})'
+        # A date that can't be the account's last day is said before anything is sent.
+        if ($content.FindName('expiry_never').IsChecked) {
+            Start-UserDetailWrite $state 'NoExpiry' $title -Done ((Tr "Le compte de {0} n'expire plus.") -f $row.Login) -Failed $failed
+            return
         }
-        catch {
-            $notice = $null
-            Show-Dialog -Title (Tr 'Expiration du compte') -Message ((Tr '✖ {0} : expiration non changée ({1})') -f $row.Login, $_.Exception.Message) -Owner $state.Window
+        $day = $content.FindName('expiry_date').SelectedDate
+        $wrong = if (-not $day) { Tr 'aucune date choisie' } elseif ($day.Date -lt (Get-Date).Date) { (Tr 'le {0} est passé') -f (Format-TextDate $day -Day) }
+        if ($wrong) {
+            Show-Dialog -Title $title -Message ($failed -f $row.Login, $wrong) -Owner $state.Window
+            return
         }
-        Update-UserDetail $state
-        if ($notice) { Show-DetailNotice $state $notice }
+        Start-UserDetailWrite $state 'Expiry' $title $day.Date.AddDays(1) -Done ((Tr 'Le compte de {0} expire à la fin du {1}.') -f $row.Login, (Format-TextDate $day -Day)) -Failed $failed
     }
 }
 
@@ -1423,23 +1432,72 @@ function Show-UserGroupAddDialog($State) {
 }
 
 function Add-UserGroupList($State, $Groups) {
-    # The user into each of $Groups (the picker's items), then the window read again, a notice of those it's in, and
-    # the refusals.
-    $row = $State.Row
-    $added = [System.Collections.Generic.List[string]]::new()
+    # The user into each of $Groups (the picker's items), in the background (Start-UserGroupWrite), then the window
+    # read again, a notice of those it's in, and the refusals.
+    Start-UserGroupWrite $State $Groups $true
+}
+
+function Invoke-UserGroupWrite($Row, $Groups, [bool]$Add, [string]$AsMember = 'Get-UserAsMember') {
+    # On a search runspace: the user ($Row, ConvertTo-WriteUser) into or out of each of $Groups (Name,
+    # DistinguishedName), each one's Problem as it goes (Add-WriteProgress, by index), $null when done. Through
+    # Invoke-UserChange: a group of the user's domain goes where the user's other changes go. $AsMember: what gives
+    # the server and the member a group takes (Get-UserAsMember; Get-ComputerAsMember, for a computer's Propriétés).
     $account = @{}
-    $failed = foreach ($group in $Groups) {
-        try {
-            $server, $member = Get-UserAsMember $row $group.DistinguishedName $account
-            # Through Invoke-UserChange: a group of the user's domain goes where the user's other changes go.
-            $null = Invoke-UserChange $row.Domain { param($server) Add-ADGroupMember -Server $server -Identity $group.DistinguishedName -Members $member -ErrorAction Stop } $server
-            $added.Add($group.Name)
+    $Groups = @($Groups)
+    for ($i = 0; $i -lt $Groups.Count; $i++) {
+        $group = $Groups[$i]
+        $problem = try {
+            $server, $member = & $AsMember $Row $group.DistinguishedName $account
+            if ($Add) { $null = Invoke-UserChange $Row.Domain { param($server) Add-ADGroupMember -Server $server -Identity $group.DistinguishedName -Members $member -ErrorAction Stop } $server }
+            else { $null = Invoke-UserChange $Row.Domain { param($server) Remove-ADGroupMember -Server $server -Identity $group.DistinguishedName -Members $member -Confirm:$false -ErrorAction Stop } $server }
+            $null
         }
-        catch { (Tr '✖ {0} : non ajouté à {1} ({2})') -f $row.Login, $group.Name, $_.Exception.Message }
+        catch { $_.Exception.Message }
+        Add-WriteProgress $i @{ Problem = $problem }
     }
-    Update-UserDetail $State
-    if ($added.Count) { Show-DetailNotice $State ((Tr '{0} ajouté à {1}.') -f $row.Login, (Join-FrenchList $added)) }
-    if ($failed) { Show-Dialog -Title (Tr 'Ajouter à un groupe') -Message (@($failed) -join "`n") -Owner $State.Window }
+}
+
+function Start-UserGroupWrite($State, $Groups, [bool]$Add) {
+    # Ajouter à un groupe or Retirer… of a user's Propriétés, in the background (Invoke-UserGroupWrite): the window
+    # usable meanwhile. A group already being changed for this user is left out. Then the window reads the account
+    # again, a notice names the groups done, and a dialog the others: refused, or perhaps done (the DC didn't answer
+    # in time).
+    $row = $State.Row
+    $pending = @($Groups | Where-Object { -not (Test-ADWriteBusy "Group|$($row.Domain)|$($row.DistinguishedName)|$($_.DistinguishedName)") })
+    if (-not $pending.Count) { return }
+    $keys = @($pending | ForEach-Object { "Group|$($row.Domain)|$($row.DistinguishedName)|$($_.DistinguishedName)" })
+    $copies = @($pending | ForEach-Object { [pscustomobject]@{ Name = [string]$_.Name; DistinguishedName = [string]$_.DistinguishedName } })
+    $null = Start-ADWrite -Keys $keys -Command 'Invoke-UserGroupWrite' -Arguments @((ConvertTo-WriteUser $row), $copies, $Add) -Functions 'Get-UserAsMember', 'Get-DomainOfDN' `
+        -Count $copies.Count -Window $State.Window -Context @{ State = $State; Groups = $copies; Add = $Add } -OnDone {
+        param($write, $outcome)
+        Complete-UserGroupWrite $write.State $write.Groups $write.Add $outcome
+    }
+}
+
+function Complete-UserGroupWrite($State, $Groups, [bool]$Add, $Outcome) {
+    # Start-UserGroupWrite's change: the window read again, the groups done in its toast, the others in a dialog.
+    $login = $State.Row.Login
+    $done = [System.Collections.Generic.List[string]]::new()
+    $lines = for ($i = 0; $i -lt $Groups.Count; $i++) {
+        $group = $Groups[$i]
+        $answer = Get-WriteAnswer $Outcome $i
+        if ($answer.Unsure) { (Tr '⚠ {0} : {1}') -f $group.Name, (Get-WriteUnsureText $Outcome.Timeout) }
+        elseif ($answer.Problem) {
+            $format = if ($Add) { Tr '✖ {0} : non ajouté à {1} ({2})' } else { Tr '✖ {0} : non retiré de {1} ({2})' }
+            $format -f $login, $group.Name, $answer.Problem
+        }
+        else { $done.Add($group.Name) }
+    }
+    $open = -not $State['Closed']
+    if ($open) { Update-UserDetail $State }
+    if ($done.Count -and $open) {
+        $format = if ($Add) { Tr '{0} ajouté à {1}.' } else { Tr '{0} retiré de {1}.' }
+        Show-DetailNotice $State ($format -f $login, (Join-FrenchList $done))
+    }
+    if ($lines) {
+        $title = if ($Add) { Tr 'Ajouter à un groupe' } else { Tr 'Retirer du groupe' }
+        Show-Dialog -Title $title -Message (@($lines) -join "`n") -Owner (Get-DetailOwner $State)
+    }
 }
 
 function Confirm-PrivilegedGroup($Groups, [string]$Who, $Owner, [hashtable]$State, [scriptblock]$OnOk) {
@@ -1686,21 +1744,8 @@ function Remove-UserGroup($State) {
         -Message $message -OkText (Tr 'Retirer') -CancelIsDefault `
         -State @{ Detail = $State; Groups = $groups } -OnOk {
         param($dialog)
-        $state = $dialog.Detail
-        $row = $state.Row
-        $removed = [System.Collections.Generic.List[string]]::new()
-        $account = @{}
-        $failed = foreach ($group in $dialog.Groups) {
-            try {
-                $server, $member = Get-UserAsMember $row $group.DistinguishedName $account
-                $null = Invoke-UserChange $row.Domain { param($server) Remove-ADGroupMember -Server $server -Identity $group.DistinguishedName -Members $member -Confirm:$false -ErrorAction Stop } $server
-                $removed.Add($group.Name)
-            }
-            catch { (Tr '✖ {0} : non retiré de {1} ({2})') -f $row.Login, $group.Name, $_.Exception.Message }
-        }
-        Update-UserDetail $state
-        if ($removed.Count) { Show-DetailNotice $state ((Tr '{0} retiré de {1}.') -f $row.Login, (Join-FrenchList $removed)) }
-        if ($failed) { Show-Dialog -Title (Tr 'Retirer du groupe') -Message (@($failed) -join "`n") -Owner $state.Window }
+        # In the background (Start-UserGroupWrite), then the window read again.
+        Start-UserGroupWrite $dialog.Detail $dialog.Groups $false
     }
 }
 
@@ -1744,9 +1789,10 @@ function Get-UserServer([string]$Domain) {
     # The DC a user's changes go to, the one Propriétés reads from next (Read-UserDetail, from the same entry): its
     # domain's PDC. Sent to any DC, a change would reach the PDC only later (an unlock, userAccountControl and pwdLastSet
     # aren't replicated at once), and the window, read again at once, would show the account as before. Looked up once
-    # a session, on this thread as the change itself is made. While the PDC is kept as down, the DC used in its place
-    # (Get-PdcFallback); the domain itself (any DC) when the PDC can't be looked up, and that is kept for as long, each
-    # lookup a wait.
+    # a session, on the thread the change itself is made on: a user's changes run on a search runspace (Start-ADWrite),
+    # which gives what it looked up back to the window's (Merge-DomainCache). While the PDC is kept as down, the DC
+    # used in its place (Get-PdcFallback); the domain itself (any DC) when the PDC can't be looked up, and that is kept
+    # for as long, each lookup a wait.
     $known = $script:DomainCache[$Domain]
     $fallback = Get-PdcFallback $known
     if ($fallback) { return $fallback }
@@ -1759,6 +1805,58 @@ function Get-UserServer([string]$Domain) {
     }
     $script:DomainCache[$Domain] = @{ Pdc = $pdc; Policy = $policy; PdcDown = $null; PdcProblem = $null; Fallback = $null }
     $pdc
+}
+
+function Get-KnownUserServer([string]$Domain) {
+    # What Get-UserServer gives when it needn't ask AD (the PDC known, or the DC used in its place); $null when it would
+    # have to look the PDC up, a wait the window's thread leaves to a search runspace (Start-UserServerRead).
+    $known = $script:DomainCache[$Domain]
+    $fallback = Get-PdcFallback $known
+    if ($fallback) { return $fallback }
+    if ($known -and $known.Pdc) { return $known.Pdc }
+    $null
+}
+
+function Invoke-OnUserServer([string]$Domain, [int]$At, [string]$Command, [object[]]$Arguments) {
+    # On a search runspace: & $Command @Arguments, its argument $At the DC Get-UserServer gives for $Domain, looked up
+    # here from the window's copy of $DomainCache. Result, and Cache for the window's (Merge-DomainCache).
+    $Arguments = @($Arguments)
+    $Arguments[$At] = Get-UserServer $Domain
+    $result = & $Command @Arguments
+    @{ Result = $result; Cache = $script:DomainCache }
+}
+
+function Start-UserServerRead {
+    # Start-BackgroundRead for a read that goes where $Domain's changes go (Get-UserServer), given as its argument $At:
+    # chosen on the window's thread when it's known, or else looked up on the read's runspace (Invoke-OnUserServer), so
+    # the first read of a session doesn't freeze the window while AD names the PDC. $OnDone gets the read's own result
+    # either way, and Stop-BackgroundRead finds the read by its Context's State as before.
+    param(
+        [Parameter(Mandatory)] [string]$Command,
+        [object[]]$Arguments = @(),
+        [string[]]$Functions = @(),
+        [hashtable]$Variables = @{},
+        [Parameter(Mandatory)] [scriptblock]$OnDone,
+        $Context,
+        [Parameter(Mandatory)] [string]$Domain,
+        [Parameter(Mandatory)] [int]$At
+    )
+    $known = Get-KnownUserServer $Domain
+    if ($known) {
+        $Arguments = @($Arguments)
+        $Arguments[$At] = $known
+        Start-BackgroundRead -Command $Command -Arguments $Arguments -Functions $Functions -Variables $Variables -OnDone $OnDone -Context $Context
+        return
+    }
+    $sent = $script:DomainCache.Clone()
+    $state = if ($Context -is [hashtable] -and $Context.ContainsKey('State')) { $Context.State } else { $Context }
+    Start-BackgroundRead -Command 'Invoke-OnUserServer' -Arguments @($Domain, $At, $Command, $Arguments) `
+        -Functions (@($Command) + $Functions + 'Get-UserServer', 'Get-PdcFallback') -Variables ($Variables + @{ DomainCache = $sent.Clone() }) `
+        -Context @{ State = $state; Inner = $Context; Sent = $sent; OnDone = $OnDone } -OnDone {
+        param($wrap, $read, $problem, $timedOut)
+        if ($read) { Merge-DomainCache $wrap.Sent $read.Cache }
+        & $wrap.OnDone $wrap.Inner $(if ($read) { $read.Result }) $problem $timedOut
+    }
 }
 
 function Update-DomainCache([string]$Domain, $Detail) {
@@ -1839,6 +1937,231 @@ function Test-ServerDown($ErrorRecord) {
     $false
 }
 
+# Changes to users (and BitLocker keys) run in the background (Start-ADWrite), as the computers' do
+# (Start-ComputerWrite): a slow DC, or the PDC looked up for the first time, doesn't freeze the window. On a search
+# runspace, Invoke-UserChange picks the DC and falls back as it does on the window's thread, from a copy of
+# $DomainCache. What it learns there (a PDC found, or found down) comes back to the window's (Merge-DomainCache). The
+# changes under way, by what they change (« Unlock|<domain>|<DN> »): the same change asked for again meanwhile is
+# ignored, as a second click on Déverrouiller would only unlock the account twice.
+$script:ADWrites = [System.Collections.Generic.HashSet[string]]::new([System.StringComparer]::OrdinalIgnoreCase)
+# What a change on a search runspace has done so far (Add-WriteProgress). When the DC stops answering, the window's
+# thread can then tell what was done from what may have been. Set only there.
+$script:WriteProgress = $null
+# The seconds a change gets for its first object, and for each object after it (Get-WriteTimeout).
+$script:WriteTimeoutFirst = 45
+$script:WriteTimeoutEach = 5
+
+function Get-WriteTimeout([int]$Count = 1) {
+    # How long a change to $Count objects may wait for its DCs, in seconds. The first object gets 45: a PDC that's down
+    # takes about 21 seconds to give up on (TCP's retries), then the DC found in its place (Invoke-UserChange) is asked
+    # and makes the change. More than a read's 30, since a change cut short is a change Repère can't say was made. Each
+    # other object gets 5 seconds more: it goes where the first went, a DC that answers, in well under a second.
+    $script:WriteTimeoutFirst + $script:WriteTimeoutEach * [Math]::Max(0, $Count - 1)
+}
+
+function Get-WriteUnsureText([int]$Seconds) {
+    # A change whose DC didn't answer in time may still have been made there: never said to have failed.
+    (Tr 'pas de réponse du contrôleur de domaine après {0} secondes : la modification a peut-être été faite, vérifiez') -f $Seconds
+}
+
+function Add-WriteProgress($Key, $Value) {
+    # On a search runspace: a step of a change done (its Key, a row's index or the step's name) and how it went
+    # (Get-WriteAnswer reads it back).
+    if ($null -ne $script:WriteProgress) { $script:WriteProgress[$Key] = $Value }
+}
+
+function Get-ADWriteFunction {
+    # What a change needs on its search runspace besides its own command: Invoke-UserChange and what it calls.
+    'Invoke-UserChange', 'Get-UserServer', 'Get-PdcFallback', 'Set-PdcDown', 'Get-DomainFallback', 'Test-ServerDown', 'Add-WriteProgress'
+}
+
+function Invoke-ADWrite([string]$Command, [object[]]$Arguments) {
+    # On a search runspace: the change (& $Command @Arguments) as Result, and Cache, the runspace's $DomainCache once
+    # it's done, for the window's thread (Merge-DomainCache).
+    $result = & $Command @Arguments
+    @{ Result = $result; Cache = $script:DomainCache }
+}
+
+function Merge-DomainCache($Sent, $Learnt) {
+    # On the window's thread: what a change on a search runspace learnt of the domains' DCs ($Learnt, its
+    # $DomainCache; $Sent, the copy it was given). Each entry it replaced is kept, unless the window's was meanwhile
+    # replaced by a PDC found down later. An entry is replaced, never changed: one the runspace didn't replace is the
+    # very one it was sent. The password policy a Propriétés read added meanwhile is kept with it.
+    if (-not $Learnt) { return }
+    foreach ($domain in @($Learnt.Keys)) {
+        $new = $Learnt[$domain]
+        $old = $Sent[$domain]
+        if ([object]::ReferenceEquals($new, $old)) { continue }
+        $current = $script:DomainCache[$domain]
+        $replaced = $current -and -not [object]::ReferenceEquals($current, $old)
+        if ($replaced -and $current.PdcDown -and (-not $new.PdcDown -or $current.PdcDown -gt $new.PdcDown)) { continue }
+        if ($replaced -and -not $new.Policy -and $current.Policy) {
+            $new = $new.Clone()
+            $new.Policy = $current.Policy
+        }
+        $script:DomainCache[$domain] = $new
+    }
+}
+
+function Test-ADWriteBusy([string[]]$Keys) {
+    # Whether a change to one of $Keys is under way (Start-ADWrite).
+    [bool]@($Keys | Where-Object { $script:ADWrites.Contains($_) }).Count
+}
+
+function Start-ADWrite {
+    # A change in the background: Invoke-ADWrite, & $Command @Arguments on a search runspace with $Functions defined
+    # there. $Window, the window it was asked from (the main one by default), stays usable, its pointer saying
+    # something runs. $Keys: what it changes (« Unlock|<domain>|<DN> »); while it runs, a change to one of them is
+    # ignored ($false). $Count: how many objects, for its time limit (Get-WriteTimeout). Then, on the window's thread,
+    # & $OnDone $Context $Outcome. Result: what $Command returned. Problem: why it couldn't run, or the time limit.
+    # TimedOut: the DC didn't answer in time; then Result is $null, what's in Progress (Add-WriteProgress) was done, and
+    # the rest may have been (Get-WriteAnswer). Timeout: its time limit, in seconds. $Variables: more of the runspace's
+    # script-scope variables, as Start-BackgroundRead's.
+    param(
+        [Parameter(Mandatory)] [string[]]$Keys,
+        [Parameter(Mandatory)] [string]$Command,
+        [object[]]$Arguments = @(),
+        [string[]]$Functions = @(),
+        [int]$Count = 1,
+        [Parameter(Mandatory)] [scriptblock]$OnDone,
+        $Context,
+        $Window,
+        [hashtable]$Variables = @{}
+    )
+    if (Test-ADWriteBusy $Keys) { return $false }
+    if (-not $Window) { $Window = $script:win }
+    $progress = [hashtable]::Synchronized(@{})
+    $sent = $script:DomainCache.Clone()
+    $timeout = Get-WriteTimeout $Count
+    foreach ($key in $Keys) { $null = $script:ADWrites.Add($key) }
+    Enter-BusyWindow $Window
+    $write = @{ Keys = $Keys; Window = $Window; Sent = $sent; Progress = $progress; Timeout = $timeout; OnDone = $OnDone; Context = $Context }
+    try {
+        Start-BackgroundRead -Command 'Invoke-ADWrite' -Arguments @($Command, $Arguments) -Functions (@($Command) + $Functions + (Get-ADWriteFunction)) `
+            -Variables ($Variables + @{ DomainCache = $sent.Clone(); WriteProgress = $progress }) -Timeout $timeout -Context $write -OnDone {
+            param($write, $read, $problem, $timedOut)
+            Complete-ADWrite $write $read $problem $timedOut
+        }
+    }
+    catch {
+        # Not started: the next click can try again.
+        foreach ($key in $Keys) { $null = $script:ADWrites.Remove($key) }
+        Exit-BusyWindow $Window
+        throw
+    }
+    $true
+}
+
+function Complete-ADWrite($Write, $Read, [string]$Problem, [bool]$TimedOut) {
+    # Start-ADWrite's change ended, or ran out of time: its keys free again, what it learnt of the DCs kept, then its
+    # OnDone.
+    foreach ($key in $Write.Keys) { $null = $script:ADWrites.Remove($key) }
+    Exit-BusyWindow $Write.Window
+    if ($Read) { Merge-DomainCache $Write.Sent $Read.Cache }
+    if (-not $Problem -and -not $Read) { $Problem = Tr 'AD n''a rien renvoyé' }
+    $outcome = @{ Result = $(if ($Read) { $Read.Result }); Problem = $Problem; TimedOut = $TimedOut; Progress = $Write.Progress; Timeout = $Write.Timeout }
+    & $Write.OnDone $Write.Context $outcome
+}
+
+function Get-WriteAnswer($Outcome, $Key) {
+    # What a change's outcome says of one of its steps ($Key, as Add-WriteProgress has it): Problem, why it wasn't done
+    # ($null when it was); Unsure, $true when the DC stopped answering before it said; Value, what the step gave.
+    if ($Outcome.Progress.ContainsKey($Key)) {
+        $value = $Outcome.Progress[$Key]
+        return @{ Problem = $value.Problem; Unsure = $false; Value = $value }
+    }
+    if ($Outcome.TimedOut) { return @{ Problem = $null; Unsure = $true; Value = $null } }
+    $why = if ($Outcome.Problem) { $Outcome.Problem } else { Tr 'AD n''a rien renvoyé' }
+    @{ Problem = $why; Unsure = $false; Value = $null }
+}
+
+function Get-WriteLine([string]$Name, $Answer, [int]$Timeout) {
+    # A report's line for one object (Show-ActionReport): « ✔ jdupont », « ✖ jdupont : why », or « ⚠ jdupont : … »
+    # when the change may have been made.
+    if ($Answer.Unsure) { return (Tr '⚠ {0} : {1}') -f $Name, (Get-WriteUnsureText $Timeout) }
+    if ($Answer.Problem) { return (Tr '✖ {0} : {1}') -f $Name, $Answer.Problem }
+    "✔ $Name"
+}
+
+function Get-UserWriteKey([string]$Action, $Row) {
+    # What a change to a user changes, for Start-ADWrite's keys: Activer and Désactiver the same thing, as do the
+    # expiration's two choices, so one can't run while the other does.
+    $what = switch ($Action) { { $_ -in 'Enable', 'Disable' } { 'Enabled' } { $_ -in 'Expiry', 'NoExpiry' } { 'Expiry' } default { $Action } }
+    "$what|$($Row.Domain)|$($Row.DistinguishedName)"
+}
+
+function ConvertTo-WriteUser($Rows) {
+    # What a change on a search runspace needs of each user: a copy of its login, domain and DN, rather than the page's
+    # row, which the window's thread goes on changing.
+    foreach ($row in @($Rows)) {
+        [pscustomobject]@{ Login = [string]$row.Login; Domain = [string]$row.Domain; DistinguishedName = [string]$row.DistinguishedName }
+    }
+}
+
+function Invoke-UserAccountWrite([string]$Action, $Rows, $Value) {
+    # On a search runspace: $Action for each of $Rows (ConvertTo-WriteUser), in its domain, on the DC its Propriétés
+    # reads from (Invoke-UserChange): Unlock, Enable, Disable, Expiry (the account expires at $Value) or NoExpiry. Each
+    # one's Problem as it goes (Add-WriteProgress, by index), $null when it went well.
+    $Rows = @($Rows)
+    for ($i = 0; $i -lt $Rows.Count; $i++) {
+        $row = $Rows[$i]
+        $problem = try {
+            $null = Invoke-UserChange $row.Domain {
+                param($server)
+                switch ($Action) {
+                    'Unlock' { Unlock-ADAccount -Server $server -Identity $row.DistinguishedName -ErrorAction Stop }
+                    'Enable' { Enable-ADAccount -Server $server -Identity $row.DistinguishedName -ErrorAction Stop }
+                    'Disable' { Disable-ADAccount -Server $server -Identity $row.DistinguishedName -ErrorAction Stop }
+                    'Expiry' { Set-ADAccountExpiration -Server $server -Identity $row.DistinguishedName -DateTime $Value -ErrorAction Stop }
+                    'NoExpiry' { Clear-ADAccountExpiration -Server $server -Identity $row.DistinguishedName -ErrorAction Stop }
+                    default { throw "Unknown action: $Action" }
+                }
+            }
+            $null
+        }
+        catch { $_.Exception.Message }
+        Add-WriteProgress $i @{ Problem = $problem }
+    }
+}
+
+function Get-DetailOwner($State) {
+    # The window a Propriétés' change says how it went over: its own, or the main one once it has closed.
+    if ($State['Closed']) { $null } else { $State.Window }
+}
+
+function Start-UserDetailWrite($State, [string]$Action, [string]$Title, $Value, [string]$Done, [string]$Failed, [switch]$AfterRead) {
+    # A change from a user's Propriétés (Invoke-UserAccountWrite's $Action, with $Value), in the background: the window
+    # usable meanwhile, its pointer saying it runs; asked for again while it runs, it's ignored. Then $Done in its
+    # toast (once the window has read the account again, with -AfterRead), or why not in a dialog over it ($Failed: {0}
+    # the login, {1} why; « ✖ {0} : {1} » by default), and the window reads the account again.
+    $row = $State.Row
+    $null = Start-ADWrite -Keys @(Get-UserWriteKey $Action $row) -Command 'Invoke-UserAccountWrite' -Arguments @($Action, @(ConvertTo-WriteUser $row), $Value) `
+        -Window $State.Window -Context @{ State = $State; Title = $Title; Done = $Done; Failed = $Failed; AfterRead = [bool]$AfterRead } -OnDone {
+        param($write, $outcome)
+        Complete-UserDetailWrite $write (Get-WriteAnswer $outcome 0) $outcome.Timeout
+    }
+}
+
+function Complete-UserDetailWrite($Write, $Answer, [int]$Timeout) {
+    # Start-UserDetailWrite's change done, failed, or perhaps done (its DC didn't answer in time): said, then the
+    # window reads the account again, which shows whether it was. Closed meanwhile: a failure is said over the main
+    # window, a success in no toast.
+    $state = $Write.State
+    $login = $state.Row.Login
+    $owner = Get-DetailOwner $state
+    if ($Answer.Unsure) {
+        Show-Dialog -Title $Write.Title -Icon 'warning' -Tone 'warn' -Message ((Tr '⚠ {0} : {1}') -f $login, (Get-WriteUnsureText $Timeout)) -Owner $owner
+    }
+    elseif ($Answer.Problem) {
+        $format = if ($Write.Failed) { $Write.Failed } else { Tr '✖ {0} : {1}' }
+        Show-Dialog -Title $Write.Title -Message ($format -f $login, $Answer.Problem) -Owner $owner
+    }
+    elseif (-not $state['Closed']) {
+        if ($Write.AfterRead) { $state.NoticeAfterRead = $Write.Done } else { Show-DetailNotice $state $Write.Done }
+    }
+    if (-not $state['Closed']) { Update-UserDetail $state }
+}
+
 function Get-DetailReadVariable {
     # The script's variables the reads use, for their runspace.
     @{
@@ -1859,7 +2182,10 @@ function Start-DetailRead($State) {
     $State.RefreshButton.IsEnabled = $false
     try {
         $read = & $State.Read $State
-        Start-BackgroundRead @read -Variables (Get-DetailReadVariable) -Context $State -OnDone ${function:Complete-DetailRead}
+        # A read that goes where the object's changes go (Domain, and the argument At that names the DC) has that DC
+        # looked up off the window's thread the first time (Start-UserServerRead).
+        if ($read.ContainsKey('At')) { Start-UserServerRead @read -Variables (Get-DetailReadVariable) -Context $State -OnDone ${function:Complete-DetailRead} }
+        else { Start-BackgroundRead @read -Variables (Get-DetailReadVariable) -Context $State -OnDone ${function:Complete-DetailRead} }
     }
     catch {
         $State.Reading = $false

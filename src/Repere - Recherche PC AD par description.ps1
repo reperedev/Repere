@@ -172,7 +172,7 @@ if ($useFakeAD -and -not (Test-Path -LiteralPath "$PSScriptRoot\FakeAD\FakeAD.ps
     Exit-Repere (Tr "Cet ordinateur n'est pas joint à un domaine : Repère a besoin d'Active Directory.")
 }
 if ($useFakeAD) {
-    Write-Host "AD fictif utilisé (ordinateur hors domaine ou -FakeAD)."
+    Write-Host (Tr 'AD fictif utilisé (ordinateur hors domaine ou -FakeAD).')
     if ($ExtraFakeComputers -gt 0) { $env:REPERE_FAKEAD_EXTRA_COMPUTERS = $ExtraFakeComputers }
     Import-Module "$PSScriptRoot\FakeAD\FakeAD.psm1" -ErrorAction Stop
 }
@@ -233,7 +233,7 @@ if (-not $domainList.Count) {
     }
     catch {
         # Off the network the forest can't be read: offer only the user's domain, whose searches then show the error.
-        Write-Host "Domaines de la forêt non lus: $_"
+        Write-Host ((Tr 'Domaines de la forêt non lus : {0}') -f $_)
         $domainList = @(if ($env:USERDNSDOMAIN) { $env:USERDNSDOMAIN.ToLowerInvariant() } else { $computerSystem.Domain })
     }
 }
@@ -242,7 +242,7 @@ $defaultDomain = $domainList | Where-Object { $_ -eq $env:USERDNSDOMAIN } | Sele
 if (-not $defaultDomain) { $defaultDomain = $domainList[0] }
 # The Domaine list and column only show when there's a choice to make.
 $showDomains = $domainList.Count -gt 1
-Write-Host "Domaines: $($domainList -join ', ')"
+Write-Host ((Tr 'Domaines : {0}') -f ($domainList -join ', '))
 
 # Searches run in background runspaces, so the window stays responsive and can cancel them, and each domain is
 # searched on its own runspace, in parallel (up to 4 at once). The runspaces load the AD module once, in the
@@ -670,9 +670,10 @@ $windowXaml = @'
             <DataGridTemplateColumn Header="Système" SortMemberPath="OSBuild" Width="130">
               <DataGridTemplateColumn.CellTemplate>
                 <DataTemplate>
-                  <!-- Win 11 24H2, the full value in the tooltip. In orange once its support has ended; « Inconnu » when AD
-                       doesn't know (never logged on). Sorted by build. -->
-                  <TextBlock ToolTip="{Binding OSFull}">
+                  <!-- Win 11 24H2, the full value in the tooltip, with what Repère adds about its support (a release it
+                       doesn't know yet, ESU). In orange once its support has ended; « Inconnu » when AD doesn't know
+                       (never logged on). Sorted by build. -->
+                  <TextBlock ToolTip="{Binding OSTip}">
                     <TextBlock.Text><Binding Path="OSShort"><Binding.TargetNullValue>Inconnu</Binding.TargetNullValue></Binding></TextBlock.Text>
                     <TextBlock.Style>
                       <Style TargetType="TextBlock" BasedOn="{StaticResource Grid.Text}">
@@ -700,7 +701,7 @@ $windowXaml = @'
                           <TextBlock FontWeight="{DynamicResource R.FontWeightStrong}">
                             <TextBlock.Text><MultiBinding StringFormat="{}{0} › {1}"><Binding Path="Domain"/><Binding Path="OUPath"/></MultiBinding></TextBlock.Text>
                           </TextBlock>
-                          <TextBlock Text="{Binding OU}" FontSize="11.5" Margin="0,3,0,0" Opacity="0.75"/>
+                          <TextBlock Text="{Binding DistinguishedName}" FontSize="11.5" Margin="0,3,0,0" Opacity="0.75"/>
                         </StackPanel>
                       </ToolTip>
                     </TextBlock.ToolTip>
@@ -901,10 +902,10 @@ Register-ThemeFollow $win
 # An error in an event handler is said in a toast and in the console, instead of closing the window.
 $win.Dispatcher.Add_UnhandledException({
     $e = $args[1]
-    Write-Host "Erreur : $($e.Exception.Message)"
+    Write-Host ((Tr 'Erreur : {0}') -f $e.Exception.Message)
     $e.Handled = $true
     try { Show-ActionNotice (Tr 'Erreur') "✖ $($e.Exception.Message)" $e.Exception.Message }
-    catch { Write-Host "Erreur : $_" }
+    catch { Write-Host ((Tr 'Erreur : {0}') -f $_) }
 })
 
 if ($useFakeAD) {
@@ -1266,15 +1267,17 @@ function Format-ComputerList([string[]]$Lines) {
 }
 
 function New-ReportList([string[]]$Lines) {
-    # A report's lines as rows: a red or green mark, the computer, and what happened to it. Lines like
-    # « ✖ ORD-07 : protégé contre la suppression accidentelle » or « ✔ ORD-09 (avec 2 objets enfants) ».
+    # A report's lines as rows: a red, amber or green mark, the computer, and what happened to it. Lines like
+    # « ✖ ORD-07 : protégé contre la suppression accidentelle », « ⚠ jdupont : pas de réponse du contrôleur de domaine… »
+    # (a change that may have been made: Get-WriteUnsureText) or « ✔ ORD-09 (avec 2 objets enfants) ».
     $x = { param($value) ConvertTo-XamlValue $value }
     $rows = foreach ($line in @($Lines | Select-Object -First 15)) {
         $failed = $line.StartsWith('✖')
-        $rest = $line.TrimStart('✖', '✔').Trim()
+        $unsure = $line.StartsWith('⚠')
+        $rest = $line.TrimStart('✖', '✔', '⚠').Trim()
         $name, $detail = if ($rest -match '^(?<name>\S+)\s*(?::\s*(?<detail>.*)|(?<detail>\(.*\)))?$') { $Matches.name, $Matches.detail } else { $rest, '' }
-        $icon = if ($failed) { 'xcircle' } elseif ($line.StartsWith('✔')) { 'checkcircle' } else { 'info' }
-        $color = if ($failed) { 'R.DangerText' } elseif ($line.StartsWith('✔')) { 'R.SuccessText' } else { 'R.Muted' }
+        $icon = if ($failed) { 'xcircle' } elseif ($unsure) { 'warning' } elseif ($line.StartsWith('✔')) { 'checkcircle' } else { 'info' }
+        $color = if ($failed) { 'R.DangerText' } elseif ($unsure) { 'R.WarnText' } elseif ($line.StartsWith('✔')) { 'R.SuccessText' } else { 'R.Muted' }
         @"
 <Border BorderBrush="{DynamicResource R.Border}" BorderThickness="0,0,0,1" Padding="12,9">
   <Grid>
@@ -1300,15 +1303,23 @@ function Show-ActionReport([string[]]$Lines, [string]$Title, [System.Windows.Win
     # French. $Many: the notice for several lines that went well ({0}: how many), « ✔ 3 ordinateurs » by default; the
     # users' and the keys' say theirs. $Outcome: the notice's heading, what was done rather than the action's name
     # (« Activé », for one line; « Activés », for several), the dialog's keeping the action's (« Activer : échec »).
+    # A line marked ⚠ is a change that may have been made (its DC didn't answer in time): it's neither, so it's said
+    # in the dialog too, after the failures, and without failures the dialog says to check rather than that it failed.
     $Lines = @($Lines | ForEach-Object { ConvertTo-FrenchError $_ })
     $failed = @($Lines | Where-Object { $_.StartsWith('✖') })
-    if (-not $failed.Count) {
+    $unsure = @($Lines | Where-Object { $_.StartsWith('⚠') })
+    if (-not $failed.Count -and -not $unsure.Count) {
         if (-not $Many) { $Many = Tr '✔ {0} ordinateurs' }
         $heading = if (-not $Outcome) { $Title } elseif ($Lines.Count -eq 1) { $Outcome[0] } else { $Outcome[-1] }
         Show-ActionNotice $heading $(if ($Lines.Count -eq 1) { $Lines[0] } else { $Many -f $Lines.Count }) ($Lines -join "`n")
         return
     }
-    $sorted = $failed + @($Lines | Where-Object { -not $_.StartsWith('✖') })
+    $sorted = $failed + $unsure + @($Lines | Where-Object { -not $_.StartsWith('✖') -and -not $_.StartsWith('⚠') })
+    if (-not $failed.Count) {
+        $heading = if ($unsure.Count -eq $Lines.Count) { (Tr '{0} : à vérifier') -f $Title } else { (Tr '{0} : {1} à vérifier sur {2}') -f $Title, $unsure.Count, $Lines.Count }
+        Show-Dialog -Title $Title -Heading $heading -Icon 'warning' -Tone 'warn' -Content (New-ReportList $sorted) -MessageName (Format-ComputerList $sorted) -Owner $Owner
+        return
+    }
     $heading = if ($Lines.Count -eq 1) { (Tr '{0} : échec') -f $Title }
                elseif ($failed.Count -eq 1) { (Tr '{0} : 1 échec sur {1}') -f $Title, $Lines.Count }
                else { (Tr '{0} : {1} échecs sur {2}') -f $Title, $failed.Count, $Lines.Count }
@@ -1411,7 +1422,7 @@ if (-not $useFakeAD) {
     $win.Add_ContentRendered({
         $null = $script:win.Dispatcher.BeginInvoke([Action]{
             try { Import-Module ActiveDirectory -Global -ErrorAction Stop }
-            catch { Write-Host "Module ActiveDirectory non chargé : $_" }
+            catch { Write-Host ((Tr 'Module ActiveDirectory non chargé : {0}') -f $_) }
         }, [System.Windows.Threading.DispatcherPriority]::ApplicationIdle)
     })
 }

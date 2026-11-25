@@ -62,12 +62,19 @@ function ConvertFrom-QuserOutput([string[]]$Lines) {
 }
 
 function Get-SessionQueryProblem([string]$Text) {
-    # Why quser listed no session: nobody is logged on (Problem is $false), or what to check. Matched on quser's text,
-    # in Windows' language.
+    # Why quser listed no session: nobody is logged on (Problem is $false), or what to check. quser says only text, in
+    # Windows' language, and the same exit code for all: its errors are known by the codes that text holds in every
+    # language (« Error 0x000006BA enumerating sessionnames », « Error [1722]: … »). Nobody logged on has no code, so it's
+    # known by its text alone, in English or French; and so are the errors, as a last resort, without their code.
     switch -Regex ($Text) {
+        '0x00000005|\[5\]' { return @{ Problem = $true; Message = Tr "Accès refusé : il faut être administrateur de l'ordinateur." } }
+        '0x000006BA|\[1722\]' {
+            return @{ Problem = $true; Message = Tr "L'ordinateur ne répond pas : il est éteint ou injoignable, ou il refuse les requêtes de sessions à distance (AllowRemoteRPC à 0, ou pare-feu)." }
+        }
         'No User exists|Aucun utilisateur' { return @{ Problem = $false; Message = Tr "Personne n'a de session ouverte sur cet ordinateur." } }
-        '0x00000005|Access is denied|Accès refusé' { return @{ Problem = $true; Message = Tr "Accès refusé : il faut être administrateur de l'ordinateur." } }
-        '0x000006BA|RPC' {
+        # Its accents matched by any letter: this pattern isn't shown.
+        'Access is denied|Acc.s refus.' { return @{ Problem = $true; Message = Tr "Accès refusé : il faut être administrateur de l'ordinateur." } }
+        'RPC' {
             return @{ Problem = $true; Message = Tr "L'ordinateur ne répond pas : il est éteint ou injoignable, ou il refuse les requêtes de sessions à distance (AllowRemoteRPC à 0, ou pare-feu)." }
         }
         default { return @{ Problem = $true; Message = Tr 'Les sessions ouvertes sur cet ordinateur n''ont pas pu être lues.' } }

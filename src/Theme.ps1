@@ -1894,7 +1894,7 @@ function Initialize-Theme {
     }
     catch {
         # A hand-edited settings file shouldn't keep Repère from starting.
-        Write-Host "Thème ignoré : $_"
+        Write-Host ((Tr 'Thème ignoré : {0}') -f $_)
         $script:Appearance.Scheme = 'Repere'
         Update-ThemeResource
     }

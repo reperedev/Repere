@@ -41,7 +41,7 @@ Switch pages with **Computers**, **Users** and **Groups** at the top of the wind
 - [**Guide**](docs/en/guide.md): every page and action, with screenshots.
 - [**Troubleshooting**](docs/en/troubleshooting.md): what Repère's messages mean, and what to do.
 - [**Administration**](docs/en/administration.md): launch options, a shared shortcut, what the domain must allow, where Repère keeps its settings.
-- [**Changelog**](CHANGELOG.md) (in French): what changes from one version to the next.
+- [**Changelog**](CHANGELOG.en.md) (in French before 0.15.1): what changes from one version to the next.
 
 ## License
 

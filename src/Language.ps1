@@ -49,10 +49,10 @@ function Read-TextTable([string]$Path) {
     $table
 }
 
-function Initialize-Language([string]$Language) {
+function Initialize-Language([string]$Language, [switch]$ReadOnly) {
     # This run's language: -Language when given, else the choice saved in Paramètres, else Windows's. In English, the
     # table goes in the process's data, where Tr reads it on every runspace. Without a usable Language.en.psd1, French,
-    # rather than no window at all.
+    # rather than no window at all. -ReadOnly: nothing is saved (PCSpecs.ps1 run on its own).
     $unreadable = $false
     $script:LanguageChoice = Read-SavedLanguage ([ref]$unreadable)
     if ($null -eq $script:LanguageChoice) {
@@ -63,14 +63,14 @@ function Initialize-Language([string]$Language) {
         # whoever corrects it (#243).
         $folder = Split-Path $script:LanguageSettingPath
         $script:LanguageChoice = if (Get-ChildItem -LiteralPath $folder -Filter *.json -ErrorAction SilentlyContinue) { 'fr' } else { '' }
-        if (-not $unreadable) { Save-LanguageChoice $script:LanguageChoice }
+        if (-not $unreadable -and -not $ReadOnly) { Save-LanguageChoice $script:LanguageChoice }
     }
     $script:UILanguage = Resolve-Language $(if ($Language) { $Language } else { $script:LanguageChoice })
     $table = $null
     if ($script:UILanguage -eq 'en') {
         try { $table = Read-TextTable (Join-Path $PSScriptRoot 'Language.en.psd1') }
         catch {
-            Write-Host "Anglais indisponible, Repère reste en français : $_"
+            Write-Host "Anglais indisponible, Repère reste en français (English unavailable) : $_"
             $script:UILanguage = 'fr'
         }
     }

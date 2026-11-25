@@ -10,19 +10,62 @@
 $script:BackgroundReadList = [System.Collections.Generic.List[object]]::new()
 $script:BackgroundReadTimer = [System.Windows.Threading.DispatcherTimer]::new()
 $script:BackgroundReadTimer.Interval = [timespan]::FromMilliseconds(40)
-$script:BackgroundReadTimer.Add_Tick({ Complete-BackgroundRead })
+# An OnDone can open a window that waits (ShowDialog), from which a read or a change starts: WPF's timer doesn't tick
+# again until its Tick handler returns, so what the window started would only end once it's closed. Started again
+# first, it goes on ticking meanwhile.
+$script:BackgroundReadTimer.Add_Tick({
+    $script:BackgroundReadTimer.Stop()
+    $script:BackgroundReadTimer.Start()
+    Complete-BackgroundRead
+})
+
+# How long a read may wait for its DC, in seconds, counted from when it starts on a runspace (one waiting for a free
+# runspace isn't counted). A read is a few queries on one object, which a DC that answers gives in a second or two. A
+# DC that's down makes Windows give up on the connection after about 21 seconds (TCP's retries), and the first read of
+# a domain may then try another DC (Get-UserServer): 30 seconds leave room for that, and a read still waiting after it
+# has a DC that stopped answering, not a slow one. A read that waits on something else as well (SCCM, with its own
+# limit) asks for more time.
+$script:ReadTimeout = 30
+# The seconds a read of several computers gets for each one after its first (Get-ReadTimeout).
+$script:ReadTimeoutEach = 2
+
+function Get-ReadTimeout([int]$Count = 1) {
+    # How long a read of $Count computers may wait, in seconds (Mot de passe LAPS…, Clés BitLocker…, the guard read of
+    # Désactiver, Supprimer and Déplacer): they're read one after the other on one runspace. The first gets a read's 30
+    # seconds, for a DC found down and the one asked in its place; each other one 2 seconds more, as it goes to a DC
+    # that answers, in well under a second. 200 computers then get under 7 minutes, never stopped for being many.
+    $script:ReadTimeout + $script:ReadTimeoutEach * [Math]::Max(0, $Count - 1)
+}
+# The reads stopped at their time limit: each one's PowerShell and the handle of its result, disposed once it ends. A
+# call stuck on a DC may only return on its own, so it isn't waited for.
+$script:BackgroundStopping = [System.Collections.Generic.List[object]]::new()
+
+function Get-ReadTimeoutProblem([int]$Seconds) {
+    # What a read's OnDone is told when its DC didn't answer in time.
+    (Tr 'pas de réponse du contrôleur de domaine après {0} secondes') -f $Seconds
+}
+
+function Test-ReadTimedOut($Read, [datetime]$Now = [datetime]::UtcNow) {
+    # Whether a read under way has run out of time: started on its runspace ($Read.Clock.Started, set there) at least
+    # $Read.Timeout seconds ago, and not ended. A Timeout of 0 never runs out.
+    $started = $Read.Clock.Started
+    [bool]($Read.Timeout -gt 0 -and $Read.Handle -and -not $Read.Handle.IsCompleted -and $started -and ($Now - [datetime]$started).TotalSeconds -ge $Read.Timeout)
+}
 
 function Start-BackgroundRead {
     # Runs $Command with $Arguments on a search runspace, with $Functions defined there and $Variables as its
-    # script-scope variables; then, on the window's thread, & $OnDone $Context $Result $Problem (the error's message, or
-    # $null).
+    # script-scope variables; then, on the window's thread, & $OnDone $Context $Result $Problem $TimedOut ($Problem: the
+    # error's message, or $null). $Timeout: the most seconds it may run ($script:ReadTimeout by default, 0 for no
+    # limit). Past it, the read is stopped, and $OnDone gets no result, Get-ReadTimeoutProblem as its problem and
+    # $TimedOut $true.
     param(
         [Parameter(Mandatory)] [string]$Command,
         [object[]]$Arguments = @(),
         [string[]]$Functions = @(),
         [hashtable]$Variables = @{},
         [Parameter(Mandatory)] [scriptblock]$OnDone,
-        $Context
+        $Context,
+        [int]$Timeout = $script:ReadTimeout
     )
     # ConvertTo-FrenchError (Errors.ps1) on every one: a read says why a part of it couldn't be read.
     $Functions = @($Functions) + 'ConvertTo-FrenchError'
@@ -30,8 +73,11 @@ function Start-BackgroundRead {
     $definitions = foreach ($name in @($Command) + $Functions | Select-Object -Unique) {
         "function $name {$([Environment]::NewLine)$((Get-Item "function:$name").Definition)$([Environment]::NewLine)}"
     }
+    # When it starts on its runspace, for its time limit (Test-ReadTimedOut).
+    $clock = [hashtable]::Synchronized(@{ Started = $null })
     $script = @"
-param(`$Variables, `$Arguments, `$RowBuilder)
+param(`$Variables, `$Arguments, `$RowBuilder, `$Clock)
+`$Clock.Started = [datetime]::UtcNow
 . ([scriptblock]::Create(`$RowBuilder))
 foreach (`$name in `$Variables.Keys) { Set-Variable -Scope Script -Name `$name -Value `$Variables[`$name] }
 $($definitions -join [Environment]::NewLine)
@@ -39,14 +85,25 @@ $($definitions -join [Environment]::NewLine)
 "@
     $shell = [powershell]::Create()
     $shell.RunspacePool = $script:searchPool
-    $null = $shell.AddScript($script).AddArgument($Variables).AddArgument($Arguments).AddArgument($script:rowBuilderScript)
+    $null = $shell.AddScript($script).AddArgument($Variables).AddArgument($Arguments).AddArgument($script:rowBuilderScript).AddArgument($clock)
     # Asked while the runspaces are still opening (right after launch): started by the timer once they have.
     $handle = if ("$($script:searchPool.RunspacePoolStateInfo.State)" -notin 'BeforeOpen', 'Opening') { $shell.BeginInvoke() }
-    $script:BackgroundReadList.Add(@{ Shell = $shell; Handle = $handle; OnDone = $OnDone; Context = $Context })
+    $script:BackgroundReadList.Add(@{ Shell = $shell; Handle = $handle; OnDone = $OnDone; Context = $Context; Timeout = $Timeout; Clock = $clock })
     $script:BackgroundReadTimer.Start()
 }
 
 function Complete-BackgroundRead {
+    # The reads that ran out of time: stopped without waiting for them, and their OnDone told why at once.
+    foreach ($read in @($script:BackgroundReadList | Where-Object { Test-ReadTimedOut $_ })) {
+        if (-not $script:BackgroundReadList.Remove($read)) { continue }
+        $null = $read.Shell.BeginStop($null, $null)
+        $script:BackgroundStopping.Add($read)
+        try { & $read.OnDone $read.Context $null (Get-ReadTimeoutProblem $read.Timeout) $true }
+        catch { Write-Host ((Tr 'Lecture en arrière-plan : {0}') -f $_) }
+    }
+    foreach ($read in @($script:BackgroundStopping | Where-Object { $_.Handle.IsCompleted })) {
+        if ($script:BackgroundStopping.Remove($read)) { $read.Shell.Dispose() }
+    }
     # Those that waited for the runspaces, which have opened or never will: the error then goes to their OnDone.
     if ("$($script:searchPool.RunspacePoolStateInfo.State)" -notin 'BeforeOpen', 'Opening') {
         foreach ($read in @($script:BackgroundReadList | Where-Object { -not $_.Handle })) {
@@ -55,8 +112,8 @@ function Complete-BackgroundRead {
                 $why = $_.Exception.Message
                 $null = $script:BackgroundReadList.Remove($read)
                 $read.Shell.Dispose()
-                try { & $read.OnDone $read.Context $null $why }
-                catch { Write-Host "Lecture en arrière-plan : $_" }
+                try { & $read.OnDone $read.Context $null $why $false }
+                catch { Write-Host ((Tr 'Lecture en arrière-plan : {0}') -f $_) }
             }
         }
     }
@@ -72,10 +129,11 @@ function Complete-BackgroundRead {
         }
         catch { $problem = if ($_.Exception.InnerException) { $_.Exception.InnerException.Message } else { $_.Exception.Message } }
         finally { $read.Shell.Dispose() }
-        try { & $read.OnDone $read.Context $result $problem }
-        catch { Write-Host "Lecture en arrière-plan : $_" }
+        try { & $read.OnDone $read.Context $result $problem $false }
+        catch { Write-Host ((Tr 'Lecture en arrière-plan : {0}') -f $_) }
     }
-    if (-not $script:BackgroundReadList.Count) { $script:BackgroundReadTimer.Stop() }
+    # Going on while a read stopped hasn't ended, so it's disposed of.
+    if (-not $script:BackgroundReadList.Count -and -not $script:BackgroundStopping.Count) { $script:BackgroundReadTimer.Stop() }
 }
 
 function Stop-BackgroundRead($Context) {
@@ -207,10 +265,33 @@ function Clear-SecretClipboard([switch]$Closing) {
 
 # The reads the main window waits on (Mot de passe LAPS…, Clés BitLocker…), by kind.
 $script:WindowReadList = [System.Collections.Generic.HashSet[string]]::new()
+# The windows waiting on something in the background, and how many things each (Enter-BusyWindow): their pointer says
+# so meanwhile, the window still usable. By reference: a Propriétés window that closed may still be waited on.
+$script:BusyWindows = [System.Collections.Generic.Dictionary[object, int]]::new([System.Collections.Generic.ReferenceEqualityComparer]::Instance)
+
+function Enter-BusyWindow($Window) {
+    # One more thing $Window waits on: its pointer says something runs in the background (AppStarting).
+    if (-not $Window) { return }
+    $count = 0
+    $null = $script:BusyWindows.TryGetValue($Window, [ref]$count)
+    $script:BusyWindows[$Window] = $count + 1
+    $Window.Cursor = [System.Windows.Input.Cursors]::AppStarting
+}
+
+function Exit-BusyWindow($Window) {
+    # One thing less: its usual pointer back once it waits on nothing.
+    if (-not $Window) { return }
+    $count = 0
+    if (-not $script:BusyWindows.TryGetValue($Window, [ref]$count)) { return }
+    if ($count -gt 1) { $script:BusyWindows[$Window] = $count - 1; return }
+    $null = $script:BusyWindows.Remove($Window)
+    $Window.Cursor = $null
+}
 
 function Start-WindowRead {
     # A read whose result opens a window: Start-BackgroundRead, the main window usable meanwhile, its pointer saying
     # something runs in the background. The same kind asked again while it runs is ignored: one window, not two.
+    # $Timeout: as Start-BackgroundRead's; $OnDone is told $TimedOut too.
     param(
         [Parameter(Mandatory)] [string]$Kind,
         [Parameter(Mandatory)] [string]$Command,
@@ -218,23 +299,24 @@ function Start-WindowRead {
         [string[]]$Functions = @(),
         [hashtable]$Variables = @{},
         [Parameter(Mandatory)] [scriptblock]$OnDone,
-        $Context
+        $Context,
+        [int]$Timeout = $script:ReadTimeout
     )
     if (-not $script:WindowReadList.Add($Kind)) { return }
-    $win.Cursor = [System.Windows.Input.Cursors]::AppStarting
+    Enter-BusyWindow $script:win
     try {
-        Start-BackgroundRead -Command $Command -Arguments $Arguments -Functions $Functions -Variables $Variables `
+        Start-BackgroundRead -Command $Command -Arguments $Arguments -Functions $Functions -Variables $Variables -Timeout $Timeout `
             -Context @{ Kind = $Kind; OnDone = $OnDone; Context = $Context } -OnDone {
-            param($read, $result, $problem)
+            param($read, $result, $problem, $timedOut)
             $null = $script:WindowReadList.Remove($read.Kind)
-            if (-not $script:WindowReadList.Count) { $win.Cursor = $null }
-            & $read.OnDone $read.Context $result $problem
+            Exit-BusyWindow $script:win
+            & $read.OnDone $read.Context $result $problem $timedOut
         }
     }
     catch {
         # Not started: the next click can try again.
         $null = $script:WindowReadList.Remove($Kind)
-        if (-not $script:WindowReadList.Count) { $win.Cursor = $null }
+        Exit-BusyWindow $script:win
         throw
     }
 }

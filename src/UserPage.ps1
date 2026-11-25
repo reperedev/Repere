@@ -80,7 +80,7 @@ function Read-PasswordSetting {
             $secure = ConvertTo-SecureString -String ([string]$saved.Default) -ErrorAction Stop
             $setting.Default = [System.Net.NetworkCredential]::new('', $secure).Password
         }
-        catch { Write-Host "motdepasse.json : mot de passe par défaut illisible ici : $_" }
+        catch { Write-Host ((Tr 'motdepasse.json : mot de passe par défaut illisible ici : {0}') -f $_) }
     }
     $setting
 }
@@ -137,10 +137,14 @@ function Get-UserPasswordState($User, [datetime]$Today, [hashtable]$Text) {
 # Get-OUPath) come from ComputerPage.ps1's $rowBuilderScript; Get-UserPasswordText and Get-UserPasswordState are
 # written into it (where it says so), as the window has them too.
 $script:UserSearchScript = {
-    param([string]$Domain, [string]$LdapFilter, [bool]$LockedOnly, [string]$RowBuilder, [datetime]$Today, [int]$Limit, [string[]]$Entries)
+    param([string]$Domain, [string]$LdapFilter, [bool]$LockedOnly, [string]$RowBuilder, [datetime]$Today, [int]$Limit, [string[]]$Entries, $Clock)
     # {{password functions}}
     try {
         if (-not (Get-Command Format-Age -ErrorAction SilentlyContinue)) { . ([scriptblock]::Create($RowBuilder)) }
+        # The page's time limit counts from here, until AD answers: its first user, or the end of a query that found
+        # none (New-SearchClock). Without a clock (Find-UserRow), no limit.
+        if ($Clock) { $Clock.Started = [datetime]::UtcNow }
+        $heard = { process { if ($Clock -and -not $Clock.Answered) { $Clock.Answered = $true }; $_ } end { if ($Clock) { $Clock.Answered = $true } } }
         $properties = 'DisplayName', 'GivenName', 'Surname', 'mail', 'Title', 'Department', 'Description', 'Enabled', 'LockedOut', 'LastLogonDate',
                       'PasswordExpired', 'PasswordNeverExpires', 'PasswordLastSet', 'msDS-UserPasswordExpiryTimeComputed', 'UserPrincipalName'
         # $Limit at most (none when 0): AD is asked for one more, to tell there are others. Not with LockedOnly: AD can't
@@ -148,7 +152,7 @@ $script:UserSearchScript = {
         $bounded = if ($Limit -gt 0 -and -not $LockedOnly) { @{ ResultSetSize = $Limit + 1 } } else { @{} }
         # How long AD took, then the rows: said in the search time's tooltip.
         $watch = [System.Diagnostics.Stopwatch]::StartNew()
-        $users = @(Get-ADUser -Server $Domain -LDAPFilter $LdapFilter -Properties $properties @bounded -ErrorAction Stop)
+        $users = @(Get-ADUser -Server $Domain -LDAPFilter $LdapFilter -Properties $properties @bounded -ErrorAction Stop | & $heard)
         $queryTime = $watch.ElapsedMilliseconds
         # lockoutTime stays set after the lockout duration has passed: LockedOut says whether it's still locked.
         if ($LockedOnly) { $users = @($users | Where-Object LockedOut) }
@@ -216,21 +220,29 @@ $script:UserSearchScript = {
 # the users' page (SearchPage.ps1 says what each key is). Its columns: see Initialize-PageColumn (Hidden are hidden
 # until chosen in Colonnes).
 $script:UserPage = @{ Root = $null; Shown = $false; Rows = $null; View = $null; Search = $null; Timer = $null; Filter = ''; FilterTimer = $null; Errors = $null; MultiDomain = $false
-                      LastRequest = $null; Truncated = $null; NotFound = @(); Unanswered = @()
+                      LastRequest = $null; Truncated = $null; NotFound = @(); Unanswered = @(); TimedOut = @()
                       Prefix = 'user'; Types = $script:UserSearchTypes; SearchSetting = 'Users'
                       Ldap = '(&(objectCategory=person)(objectClass=user){0})'; Script = $script:UserSearchScript
                       # The date the ages are counted from: the same for every domain of a search.
                       Parameters = { param($Type) @{ LockedOnly = [bool]$Type['LockedOnly']; Today = (Get-Date).Date } }
                       Action = 'Update-UserAction'; Detail = 'Show-UserDetail'; RowProperty = 'Login'
                       Copy = 'Login'; Copied = @{ Login = (Tr 'identifiants'); Name = (Tr 'noms'); Mail = (Tr 'courriels') }
-                      # The CSV's headers in this run's language.
+                      # The columns shown, each under its header (Get-ExportField). Dernière connexion writes the date
+                      # its sort key is (yyyy-MM-dd HH:mm), not the age shown. Mot de passe, what it shows (« Expire
+                      # dans 3 jours » is only true today) then, in a column of its own, when it expires, the same way:
+                      # empty when it never does or is to be changed at the next logon. The distinguished name last,
+                      # always: Domaine shows only after a search of several domains.
                       Export = @{
                           Title = (Tr 'Exporter les utilisateurs'); FileName = (Tr 'Repere_utilisateurs_{0:yyyy-MM-dd}.csv')
-                          Columns = [ordered]@{
-                              (Tr 'Nom') = 'Name'; (Tr 'Identifiant') = 'Login'; (Tr 'Courriel') = 'Mail'; (Tr 'Poste') = 'Title'; (Tr 'Service') = 'Department'
-                              (Tr 'Description') = 'Description'; (Tr 'État') = 'State'; (Tr 'Dernière connexion') = 'LastLogon'; (Tr 'Mot de passe') = 'Password'
-                              (Tr 'Domaine') = 'Domain'; (Tr 'Emplacement') = 'OUPath'; (Tr 'Nom distinctif') = 'DistinguishedName'
+                          Fields = @{
+                              PasswordSort = @{ Value = 'Password' }, @{ Header = (Tr 'Expiration du mot de passe'); Value = {
+                                  param($Row)
+                                  # The expiry's file time (Get-UserPasswordState); 0 and the largest value aren't dates.
+                                  $expiry = [int64]$Row.PasswordSort
+                                  if ($expiry -gt 0 -and $expiry -lt [int64]::MaxValue) { [datetime]::FromFileTime($expiry).ToString('yyyy-MM-dd HH:mm', [System.Globalization.CultureInfo]::InvariantCulture) }
+                              } }
                           }
+                          Last = , @{ Header = (Tr 'Nom distinctif'); Value = 'DistinguishedName' }
                       }
                       Setting = 'UserColumns'; Hidden = 'Mail', 'Description'
                       # Nom's and Identifiant's filters by the text they contain, Dernière connexion's by how long ago,
@@ -610,25 +622,55 @@ function Complete-UserRowRead {
 $script:UserRowReads = [System.Collections.Generic.Queue[object]]::new()
 
 function Invoke-UserUnlock {
-    # Unlocking only gives the account back the use of its password: no confirmation, a report.
+    # Unlocking only gives the account back the use of its password: no confirmation, a report (Start-UserAccountWrite).
     # The selection held first: piped as it comes, the list would go through as one object.
     $selected = Get-PageSelection $script:UserPage
     $locked = @($selected | Where-Object IsLocked)
     if (-not $locked.Count) { return }
-    $report = foreach ($row in $locked) {
-        try {
-            # On the DC its Propriétés read from (Invoke-UserChange), which an open one reads again just after.
-            $null = Invoke-UserChange $row.Domain { param($server) Unlock-ADAccount -Server $server -Identity $row.DistinguishedName -ErrorAction Stop }
-            $row.IsLocked = $false
-            # Verrouillé until now, unless disabled (which State says first).
-            if ($row.IsEnabled) { $row.State = Tr 'Actif' }
-            "✔ $($row.Login)"
+    Start-UserAccountWrite 'Unlock' $locked
+}
+
+function Start-UserAccountWrite([string]$Action, $Rows) {
+    # Déverrouiller, Activer or Désactiver from the page, in the background (Invoke-UserAccountWrite, Start-ADWrite):
+    # each account on the DC its Propriétés read from (Invoke-UserChange), the window usable meanwhile, the bar at its
+    # bottom saying it's under way. An account already being changed so is left out. Then Complete-UserAccountWrite.
+    $Rows = @($Rows | Where-Object { -not (Test-ADWriteBusy (Get-UserWriteKey $Action $_)) })
+    if (-not $Rows.Count) { return }
+    $title = switch ($Action) { 'Unlock' { Tr 'Déverrouiller' } 'Enable' { Tr 'Activer' } default { Tr 'Désactiver' } }
+    $started = Start-ADWrite -Keys @($Rows | ForEach-Object { Get-UserWriteKey $Action $_ }) -Command 'Invoke-UserAccountWrite' -Arguments @($Action, @(ConvertTo-WriteUser $Rows)) `
+        -Count $Rows.Count -Context @{ Action = $Action; Rows = $Rows; Title = $title } -OnDone {
+        param($write, $outcome)
+        Complete-UserAccountWrite $write $outcome
+    }
+    $who = if ($Rows.Count -eq 1) { $Rows[0].Login } else { (Tr '{0} utilisateurs') -f $Rows.Count }
+    if ($started) { Show-ActionNotice $title ((Tr '{0} : en cours…') -f $who) -Persist }
+}
+
+function Complete-UserAccountWrite($Write, $Outcome) {
+    # Start-UserAccountWrite's change: the rows of the accounts changed (État), their open Propriétés read again, and a
+    # line each in the report: done, failed, or perhaps done (the DC didn't answer in time, Get-WriteAnswer).
+    $report = for ($i = 0; $i -lt $Write.Rows.Count; $i++) {
+        $row = $Write.Rows[$i]
+        $answer = Get-WriteAnswer $Outcome $i
+        if (-not $answer.Problem -and -not $answer.Unsure) {
+            if ($Write.Action -eq 'Unlock') {
+                $row.IsLocked = $false
+                # Verrouillé until now, unless disabled (which State says first).
+                if ($row.IsEnabled) { $row.State = Tr 'Actif' }
+            }
+            else {
+                $row.IsEnabled = $Write.Action -eq 'Enable'
+                $row.State = if (-not $row.IsEnabled) { Tr 'Désactivé' } elseif ($row.IsLocked) { Tr 'Verrouillé' } else { Tr 'Actif' }
+            }
         }
-        catch { (Tr '✖ {0} : {1}') -f $row.Login, $_.Exception.Message }
+        Get-WriteLine $row.Login $answer $Outcome.Timeout
     }
     Update-UserRow
-    Update-OpenUserDetail $locked
-    Show-ActionReport @($report) (Tr 'Déverrouiller') -Many (Tr '✔ {0} utilisateurs') -Outcome (Tr 'Déverrouillé'), (Tr 'Déverrouillés')
+    Update-OpenUserDetail $Write.Rows
+    # « en cours… » is over; a dialog wouldn't replace it.
+    Hide-ActionNotice
+    $done = switch ($Write.Action) { 'Unlock' { (Tr 'Déverrouillé'), (Tr 'Déverrouillés') } 'Enable' { (Tr 'Activé'), (Tr 'Activés') } default { (Tr 'Désactivé'), (Tr 'Désactivés') } }
+    Show-ActionReport @($report) $Write.Title -Many (Tr '✔ {0} utilisateurs') -Outcome $done
 }
 
 function Invoke-UserEnable {
@@ -664,25 +706,9 @@ function Invoke-UserDisable {
 }
 
 function Set-UserEnabled($Rows, [bool]$Enabled) {
-    # Enables or disables each account in its domain (on the DC its Propriétés read from: Invoke-UserChange), then its
-    # row (État), and says how it went.
-    $report = foreach ($row in $Rows) {
-        try {
-            $null = Invoke-UserChange $row.Domain {
-                param($server)
-                if ($Enabled) { Enable-ADAccount -Server $server -Identity $row.DistinguishedName -ErrorAction Stop }
-                else { Disable-ADAccount -Server $server -Identity $row.DistinguishedName -ErrorAction Stop }
-            }
-            $row.IsEnabled = $Enabled
-            $row.State = if (-not $Enabled) { Tr 'Désactivé' } elseif ($row.IsLocked) { Tr 'Verrouillé' } else { Tr 'Actif' }
-            "✔ $($row.Login)"
-        }
-        catch { (Tr '✖ {0} : {1}') -f $row.Login, $_.Exception.Message }
-    }
-    Update-UserRow
-    Update-OpenUserDetail $Rows
-    Show-ActionReport @($report) $(if ($Enabled) { Tr 'Activer' } else { Tr 'Désactiver' }) -Many (Tr '✔ {0} utilisateurs') `
-        -Outcome $(if ($Enabled) { (Tr 'Activé'), (Tr 'Activés') } else { (Tr 'Désactivé'), (Tr 'Désactivés') })
+    # Enables or disables each account in its domain, in the background (Start-UserAccountWrite), then its row (État),
+    # and says how it went.
+    Start-UserAccountWrite $(if ($Enabled) { 'Enable' } else { 'Disable' }) $Rows
 }
 
 function Set-ResetMustChange($Box, [bool]$Forced) {
@@ -828,54 +854,113 @@ function Set-NewPasswordShown($Eye, [bool]$Shown) {
 }
 
 function Set-UserPassword {
-    # Sets the password, then « must change it », then unlocks; says the password once, or why it failed, over $Owner
-    # (the main window when $null). The password goes to AD as a SecureString and isn't kept anywhere. From a user's
-    # Propriétés ($Detail, its state), the window reads the account again.
+    # Sets the password, then « must change it », then unlocks, in the background (Set-UserPasswordWrite, Start-ADWrite):
+    # $Owner (the main window when $null) stays usable meanwhile, its pointer saying it runs. Then
+    # Complete-UserPassword says the password once, or why it failed. The password goes to AD as a SecureString and
+    # isn't kept anywhere. From a user's Propriétés ($Detail, its state), the window reads the account again.
     [Diagnostics.CodeAnalysis.SuppressMessageAttribute('PSAvoidUsingPlainTextForPassword', 'Password', Justification = 'A temporary password the technician reads out to the person: it is shown on purpose.')]
     param($Row, [string]$Password, [bool]$MustChange, [bool]$Unlock, [System.Windows.Window]$Owner, $Detail)
     if (-not $Password) {
         Show-Dialog -Title (Tr 'Nouveau mot de passe') -Message ((Tr "✖ {0} : aucun mot de passe entré, rien n'a changé.") -f $Row.Login) -Owner $Owner
         return
     }
-    # Each change on the DC the account's Propriétés read from (Invoke-UserChange): the domain's PDC, or the DC in its
-    # place, where a PDC down during the password leaves the rest.
-    try {
-        $secure = [securestring]::new()
-        foreach ($char in $Password.ToCharArray()) { $secure.AppendChar($char) }
-        $null = Invoke-UserChange $Row.Domain { param($server) Set-ADAccountPassword -Server $server -Identity $Row.DistinguishedName -Reset -NewPassword $secure -ErrorAction Stop }
+    $secure = [securestring]::new()
+    foreach ($char in $Password.ToCharArray()) { $secure.AppendChar($char) }
+    $secure.MakeReadOnly()
+    $started = Start-ADWrite -Keys @(Get-UserWriteKey 'Password' $Row) -Command 'Set-UserPasswordWrite' -Arguments @((ConvertTo-WriteUser $Row), $secure, $MustChange, $Unlock) `
+        -Window $Owner -Context @{ Row = $Row; Password = $Password; MustChange = $MustChange; Unlock = $Unlock; Owner = $Owner; Detail = $Detail } -OnDone {
+        param($write, $outcome)
+        Complete-UserPassword $write $outcome
     }
-    catch {
-        Show-Dialog -Title (Tr 'Nouveau mot de passe') -Message ((Tr '✖ {0} : mot de passe non réinitialisé ({1})') -f $Row.Login, $_.Exception.Message) -Owner $Owner
+    # A reset already under way: this password isn't sent, so the person mustn't be given it.
+    if (-not $started) {
+        Show-Dialog -Title (Tr 'Nouveau mot de passe') -Message ((Tr '✖ {0} : mot de passe non réinitialisé ({1})') -f $Row.Login, (Tr 'une réinitialisation est déjà en cours')) -Owner $Owner
+    }
+}
+
+function Set-UserPasswordWrite($Row, [securestring]$Secure, [bool]$MustChange, [bool]$Unlock) {
+    # On a search runspace (Set-UserPassword): the password, then « must change it », then the unlock, each on the DC
+    # the account's Propriétés read from (Invoke-UserChange): the domain's PDC, or the DC in its place, where a PDC
+    # down during the password leaves the rest. The others only once the password is set. Each step's Problem as it
+    # goes (Add-WriteProgress: Password, MustChange, Unlock), $null when done.
+    $problem = try {
+        $null = Invoke-UserChange $Row.Domain { param($server) Set-ADAccountPassword -Server $server -Identity $Row.DistinguishedName -Reset -NewPassword $Secure -ErrorAction Stop }
+        $null
+    }
+    catch { $_.Exception.Message }
+    Add-WriteProgress 'Password' @{ Problem = $problem }
+    if ($problem) { return }
+    if ($MustChange) {
+        $problem = try {
+            $null = Invoke-UserChange $Row.Domain { param($server) Set-ADUser -Server $server -Identity $Row.DistinguishedName -ChangePasswordAtLogon $true -ErrorAction Stop }
+            $null
+        }
+        catch { $_.Exception.Message }
+        Add-WriteProgress 'MustChange' @{ Problem = $problem }
+    }
+    if ($Unlock) {
+        $problem = try {
+            $null = Invoke-UserChange $Row.Domain { param($server) Unlock-ADAccount -Server $server -Identity $Row.DistinguishedName -ErrorAction Stop }
+            $null
+        }
+        catch { $_.Exception.Message }
+        Add-WriteProgress 'Unlock' @{ Problem = $problem }
+    }
+}
+
+function Complete-UserPassword($Write, $Outcome) {
+    # Set-UserPassword's change: why the password wasn't set; or the row as it now is, the account's Propriétés read
+    # again, and the password, once (Show-NewPassword). When the DC didn't answer in time before saying whether the
+    # password was set, it may have been: the password is shown all the same, saying so, since the person would
+    # otherwise have one no one knows.
+    $row = $Write.Row
+    $detail = $Write.Detail
+    # A Propriétés it was reset from that has closed meanwhile: said over the main window.
+    $owner = if ($detail -and $detail['Closed']) { $null } else { $Write.Owner }
+    $password = Get-WriteAnswer $Outcome 'Password'
+    if ($password.Problem) {
+        Show-Dialog -Title (Tr 'Nouveau mot de passe') -Message ((Tr '✖ {0} : mot de passe non réinitialisé ({1})') -f $row.Login, $password.Problem) -Owner $owner
         return
     }
     $problems = [System.Collections.Generic.List[string]]::new()
-    if ($MustChange) {
-        try {
-            $null = Invoke-UserChange $Row.Domain { param($server) Set-ADUser -Server $server -Identity $Row.DistinguishedName -ChangePasswordAtLogon $true -ErrorAction Stop }
-            $Row.Password, $Row.PasswordTone, $Row.PasswordTip, $Row.PasswordSort, $Row.PasswordState = (Tr 'À changer à la connexion'), 'warn', (Tr 'Le mot de passe devra être changé à la prochaine connexion.'), [int64]0, (Tr 'À changer à la connexion')
+    if (-not $password.Unsure) {
+        if ($Write.MustChange) {
+            $answer = Get-WriteAnswer $Outcome 'MustChange'
+            if ($answer.Unsure) { $problems.Add(((Tr '« doit le changer » peut-être non appliqué ({0})') -f $Outcome.Problem)) }
+            elseif ($answer.Problem) { $problems.Add(((Tr '« doit le changer » non appliqué ({0})') -f $answer.Problem)) }
+            else {
+                $row.Password, $row.PasswordTone, $row.PasswordTip, $row.PasswordSort, $row.PasswordState = (Tr 'À changer à la connexion'), 'warn', (Tr 'Le mot de passe devra être changé à la prochaine connexion.'), [int64]0, (Tr 'À changer à la connexion')
+            }
         }
-        catch { $problems.Add(((Tr '« doit le changer » non appliqué ({0})') -f $_.Exception.Message)) }
-    }
-    else {
-        # For the column's filter, what a new password is: one that expires later, unless it never does.
-        $Row.Password, $Row.PasswordTone, $Row.PasswordTip = (Tr 'Réinitialisé'), '', (Tr 'Réinitialisé à l''instant.')
-        $Row.PasswordState = if ($Row.PasswordNeverExpires) { Tr "N'expire jamais" } else { Tr 'Expire dans plus de 14 jours' }
-    }
-    if ($Unlock) {
-        try {
-            $null = Invoke-UserChange $Row.Domain { param($server) Unlock-ADAccount -Server $server -Identity $Row.DistinguishedName -ErrorAction Stop }
-            $Row.IsLocked = $false
-            # Verrouillé until now, unless disabled (which State says first).
-            if ($Row.IsEnabled) { $Row.State = Tr 'Actif' }
+        else {
+            # For the column's filter, what a new password is: one that expires later, unless it never does.
+            $row.Password, $row.PasswordTone, $row.PasswordTip = (Tr 'Réinitialisé'), '', (Tr 'Réinitialisé à l''instant.')
+            $row.PasswordState = if ($row.PasswordNeverExpires) { Tr "N'expire jamais" } else { Tr 'Expire dans plus de 14 jours' }
         }
-        catch { $problems.Add(((Tr 'compte non déverrouillé ({0})') -f $_.Exception.Message)) }
+        if ($Write.Unlock) {
+            $answer = Get-WriteAnswer $Outcome 'Unlock'
+            if ($answer.Unsure) { $problems.Add(((Tr 'compte peut-être non déverrouillé ({0})') -f $Outcome.Problem)) }
+            elseif ($answer.Problem) { $problems.Add(((Tr 'compte non déverrouillé ({0})') -f $answer.Problem)) }
+            else {
+                $row.IsLocked = $false
+                # Verrouillé until now, unless disabled (which State says first).
+                if ($row.IsEnabled) { $row.State = Tr 'Actif' }
+            }
+        }
     }
     # From Propriétés, $Row is the window's copy: the page's row of the account follows at once, not only once the
     # window has read it again.
-    Sync-UserPageRow $Row
+    Sync-UserPageRow $row
     # The window it was reset from reads itself again; reset on the page, the account's open one does.
-    if ($Detail) { Update-UserDetail $Detail } else { Update-OpenUserDetail $Row }
+    if ($detail -and -not $detail['Closed']) { Update-UserDetail $detail } else { Update-OpenUserDetail $row }
+    Show-NewPassword $row $Write.Password $Write.MustChange @($problems) $owner -Unsure:$password.Unsure -Timeout $Outcome.Timeout
+}
 
+function Show-NewPassword {
+    # Mot de passe réinitialisé: the password, once, over $Owner, with what of « must change it » and the unlock wasn't
+    # done ($Problems). -Unsure: the DC didn't answer in time ($Timeout seconds) before saying whether it was set.
+    [Diagnostics.CodeAnalysis.SuppressMessageAttribute('PSAvoidUsingPlainTextForPassword', 'Password', Justification = 'A temporary password the technician reads out to the person: it is shown on purpose.')]
+    param($Row, [string]$Password, [bool]$MustChange, [string[]]$Problems, [System.Windows.Window]$Owner, [switch]$Unsure, [int]$Timeout)
     # The password, once, to give to the person: large, in Consolas, hidden until its eye shows it (someone may be
     # looking at the screen), with a button to copy it. Set once the XAML is read, as it is: it isn't text to translate.
     $shown = [System.Windows.Markup.XamlReader]::Parse((Expand-Icon @'
@@ -899,9 +984,12 @@ function Set-UserPassword {
     Set-NewPasswordShown $eye $false
     $shown.FindName('user_new_password_copy').CommandParameter = $Password
     $shown.FindName('user_new_password_copy').Add_Click({ param($button) Show-CopyFeedback $button (Set-SecretClipboard ([string]$button.CommandParameter)) })
-    $message = if ($MustChange) { Tr "Communiquez-le à la personne. Elle devra le changer à sa prochaine connexion. Il n'est gardé nulle part." }
+    $message = if ($Unsure) { (Tr "Le contrôleur de domaine n'a pas répondu en {0} secondes : le mot de passe a peut-être été réinitialisé. Vérifiez-le (Propriétés, Actualiser) ; s'il l'a été, c'est celui-ci. Il n'est gardé nulle part.") -f $Timeout }
+               elseif ($MustChange) { Tr "Communiquez-le à la personne. Elle devra le changer à sa prochaine connexion. Il n'est gardé nulle part." }
                else { Tr "Communiquez-le à la personne. Il reste valable tel quel. Il n'est gardé nulle part." }
-    if ($problems.Count) { $message += "`n`n⚠ $($problems -join (Tr ' ; '))." }
-    Show-Dialog -Title (Tr 'Mot de passe réinitialisé') -Heading ((Tr 'Nouveau mot de passe de {0}') -f $Row.Name) -Icon 'checkcircle' -Tone $(if ($problems.Count) { 'warn' } else { 'success' }) `
+    $Problems = @($Problems | Where-Object { $_ })
+    if ($Problems.Count) { $message += "`n`n⚠ $($Problems -join (Tr ' ; '))." }
+    $warn = $Unsure -or $Problems.Count
+    Show-Dialog -Title (Tr 'Mot de passe réinitialisé') -Heading ((Tr 'Nouveau mot de passe de {0}') -f $Row.Name) -Icon $(if ($Unsure) { 'warning' } else { 'checkcircle' }) -Tone $(if ($warn) { 'warn' } else { 'success' }) `
         -Message $message -Content $shown -Owner $Owner
 }

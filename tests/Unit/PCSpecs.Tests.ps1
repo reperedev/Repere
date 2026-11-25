@@ -524,3 +524,104 @@ Describe 'ConvertFrom-PCInstallDate' {
         ConvertFrom-PCInstallDate $Value | Should -BeNullOrEmpty
     }
 }
+
+Describe 'Windows'' support: Get-WindowsRelease, its alerts and the Système column' {
+    BeforeAll {
+        # Past the table's newest build, whatever it is once new releases are added: a release this Repère doesn't know.
+        $script:NewerBuild = ($script:WindowsReleases.Keys | Measure-Object -Maximum).Maximum + 100
+        $script:UnknownNote = "Repère ne connaît pas encore cette version de Windows : sa fin de support n'est pas connue."
+        $script:EsuNote = 'Un ordinateur inscrit aux mises à jour de sécurité étendues (ESU) reste à jour pour la sécurité.'
+
+        function Get-BuildAlert([int]$Build, [string]$OSName) {
+            # The alert on Numéro de build for a computer of this build, as Caractéristiques shows it.
+            $specs = [pscustomobject]@{ General = [pscustomobject]@{ UptimeDays = $null; Build = $Build; OSName = $OSName }; Disk = $null; Battery = $null }
+            @(Get-PCSpecAlert $specs | Where-Object Field -eq 'BuildNumber')
+        }
+    }
+
+    It 'Names a known build, with its end of support for its edition' {
+        $release = Get-WindowsRelease 26100 'Windows 11 Professionnel'
+        $release.Name | Should -BeExactly 'Windows 11 24H2'
+        $release.End | Should -Be ([datetime]'2026-10-13')
+        $release.Note | Should -BeNullOrEmpty
+        (Get-WindowsRelease 26100 'Windows 11 Entreprise').End | Should -Be ([datetime]'2027-10-12')
+        $system = Get-SystemInfo 'Windows 11 Professionnel' '10.0 (26100)' ([datetime]'2026-01-01')
+        $system.Short | Should -BeExactly 'Win 11 24H2'
+        $system.Tip | Should -BeExactly 'Windows 11 Professionnel 10.0 (26100)'
+        $system.Outdated | Should -BeFalse
+        (Get-SystemInfo 'Windows 11 Professionnel' '10.0 (26100)' ([datetime]'2026-11-01')).Outdated | Should -BeTrue
+    }
+
+    It 'Says a known build past its end of support in an alert, and one near it as a warning' {
+        $past = Get-BuildAlert 22621 'Windows 11 Professionnel'
+        $past.Level | Should -BeExactly 'crit'
+        $past.Message | Should -BeExactly "Windows 11 22H2 n'est plus supporté depuis le 2024-10-08."
+    }
+
+    It 'Shows a build newer than the table''s neutrally: named by its build, never out of support, no alert, and says Repère does not know it' {
+        $release = Get-WindowsRelease $NewerBuild 'Windows 11 Professionnel'
+        $release.Name | Should -BeExactly "Windows 11 (build $NewerBuild)"
+        $release.End | Should -BeNullOrEmpty
+        $release.Note | Should -BeExactly $UnknownNote
+        # Even years from now: Repère can't say it's out of support.
+        $system = Get-SystemInfo 'Windows 11 Professionnel' "10.0 ($NewerBuild)" ([datetime]'2040-01-01')
+        $system.Short | Should -BeExactly "Win 11 (build $NewerBuild)"
+        $system.Full | Should -BeExactly "Windows 11 Professionnel 10.0 ($NewerBuild)"
+        $system.Tip | Should -BeExactly "Windows 11 Professionnel 10.0 ($NewerBuild)`n$UnknownNote"
+        $system.Outdated | Should -BeFalse
+        Get-BuildAlert $NewerBuild 'Windows 11 Professionnel' | Should -BeNullOrEmpty
+    }
+
+    It 'Says it under the build in Caractéristiques, for a computer whose release the table does not have' {
+        (Get-PCSpec 'ord-01.demo.local').General.BuildNumber | Should -BeExactly '10.0.26200 (build 26200)'
+        # ord-01 is on 26200: without it, the table's newest is older.
+        $saved = $script:WindowsReleases[26200]
+        $script:WindowsReleases.Remove(26200)
+        try { $specs = Get-PCSpec 'ord-01.demo.local' }
+        finally { $script:WindowsReleases[26200] = $saved }
+        $specs.General.BuildNumber | Should -BeExactly "10.0.26200 (build 26200)`n$UnknownNote"
+        @($specs.Alerts | Where-Object Field -eq 'BuildNumber') | Should -BeNullOrEmpty
+    }
+
+    It 'Takes a build older than the table''s oldest for a Windows 10 out of support, as before' {
+        $release = Get-WindowsRelease 18363 'Windows 10 Professionnel'
+        $release.Name | Should -BeExactly 'Windows 10 (build 18363)'
+        $release.End | Should -Be ([datetime]'2025-10-14')
+        $system = Get-SystemInfo 'Windows 10 Professionnel' '10.0 (18363)' ([datetime]'2026-01-01')
+        $system.Short | Should -BeExactly 'Win 10 (build 18363)'
+        $system.Outdated | Should -BeTrue
+        $alert = Get-BuildAlert 18363 'Windows 10 Professionnel'
+        $alert.Level | Should -BeExactly 'crit'
+        $alert.Message | Should -BeExactly "Windows 10 (build 18363) n'est plus supporté depuis le 2025-10-14."
+    }
+
+    It 'Leaves a build between the table''s it does not know unnamed and unflagged, as before' {
+        Get-WindowsRelease 22100 'Windows 11 Professionnel' | Should -BeNullOrEmpty
+        $system = Get-SystemInfo 'Windows 11 Professionnel' '10.0 (22100)' ([datetime]'2026-01-01')
+        $system.Short | Should -BeExactly 'Win 11 (build 22100)'
+        $system.Outdated | Should -BeFalse
+    }
+
+    It 'Leaves LTSC and servers out, their support following other rules: <OSName>' -ForEach @(
+        @{ OSName = 'Windows 10 Entreprise LTSC'; Version = '10.0 (17763)'; Build = 17763; Short = 'Win 10 (build 17763)' }
+        @{ OSName = 'Windows 10 Enterprise LTSB'; Version = '10.0 (14393)'; Build = 14393; Short = 'Win 10 (build 14393)' }
+        @{ OSName = 'Windows Server 2022 Standard'; Version = '10.0 (20348)'; Build = 20348; Short = 'Server 2022' }
+    ) {
+        Get-WindowsRelease $Build $OSName | Should -BeNullOrEmpty
+        $system = Get-SystemInfo $OSName $Version ([datetime]'2040-01-01')
+        $system.Short | Should -BeExactly $Short
+        $system.Tip | Should -BeExactly "$OSName $Version"
+        $system.Outdated | Should -BeFalse
+        Get-BuildAlert $Build $OSName | Should -BeNullOrEmpty
+    }
+
+    It 'Says Windows 10 22H2 out of support, and that ESU keeps a computer enrolled in it up to date' {
+        $alert = Get-BuildAlert 19045 'Windows 10 Professionnel'
+        $alert.Level | Should -BeExactly 'crit'
+        $alert.Message | Should -BeExactly "Windows 10 22H2 n'est plus supporté depuis le 2025-10-14. $EsuNote"
+        $system = Get-SystemInfo 'Windows 10 Professionnel' '10.0 (19045)' ([datetime]'2026-01-01')
+        $system.Short | Should -BeExactly 'Win 10 22H2'
+        $system.Outdated | Should -BeTrue
+        $system.Tip | Should -BeExactly "Windows 10 Professionnel 10.0 (19045)`n$EsuNote"
+    }
+}

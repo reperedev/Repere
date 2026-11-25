@@ -370,20 +370,23 @@ $rowBuilderScript = {
 
     function Get-SystemInfo([string]$OperatingSystem, [string]$Version, [datetime]$Today) {
         # The Système column: a short name (Win 11 24H2, Server 2022), the full value for the tooltip, the build to sort
-        # by, and whether its support has ended (same table as the Caractéristiques alerts, PCSpecs.ps1). All empty when
-        # AD doesn't know.
-        if (-not $OperatingSystem) { return @{ Short = $null; Full = $null; Build = $null; Outdated = $false } }
+        # by, and whether its support has ended (same table as the Caractéristiques alerts, PCSpecs.ps1). Tip, the
+        # tooltip: the full value, then what Repère adds about its support (a release it doesn't know yet, ESU). All
+        # empty when AD doesn't know.
+        if (-not $OperatingSystem) { return @{ Short = $null; Full = $null; Tip = $null; Build = $null; Outdated = $false } }
         $build = if ($Version -match '\((\d+)\)') { [int]$Matches[1] } else { 0 }
         $full = "$OperatingSystem $Version".Trim()
         if ($OperatingSystem -match 'Server (\d{4}(?: R2)?)') {
-            return @{ Short = "Server $($Matches[1])"; Full = $full; Build = $build; Outdated = $false }
+            return @{ Short = "Server $($Matches[1])"; Full = $full; Tip = $full; Build = $build; Outdated = $false }
         }
         $major = if ($build -ge 22000) { '11' } elseif ($OperatingSystem -match 'Windows (\d+)') { $Matches[1] } else { '' }
         $release = Get-WindowsRelease $build $OperatingSystem
         $short = if ($release -and $release.Name -match ' (\d{2}H\d)$') { "Win $major $($Matches[1])" }
                  elseif ($build) { "Win $major (build $build)" }
                  else { $OperatingSystem }
-        @{ Short = $short; Full = $full; Build = $build; Outdated = [bool]($release -and $release.End -lt $Today) }
+        $tip = if ($release -and $release.Note) { "$full`n$($release.Note)" } else { $full }
+        # A release Repère doesn't know has no End: neutral, never out of support.
+        @{ Short = $short; Full = $full; Tip = $tip; Build = $build; Outdated = [bool]($release -and $release.End -and $release.End -lt $Today) }
     }
 
     function New-ResultRow($Computer, [string]$Domain, [datetime]$Today, [string[]]$TextProperties, [hashtable]$Cache = @{}) {
@@ -405,7 +408,7 @@ $rowBuilderScript = {
         $row = [pscustomobject]@{
             ComputerName = [string]$Computer.Name
             Domain       = $Domain
-            OU           = $dn
+            DistinguishedName = $dn
             # Domain/OU, for the messages and the export; OUPath (Postes › Communs) is what the grid shows.
             ShortPath    = $shortPath
             OUPath       = $ouPath
@@ -426,6 +429,7 @@ $rowBuilderScript = {
             # Système: null when AD doesn't know (« Inconnu », sorted first).
             OSShort      = $system.Short
             OSFull       = $system.Full
+            OSTip        = $system.Tip
             OSBuild      = $system.Build
             IsOutdated   = $system.Outdated
             # En ligne: empty until Vérifier en ligne (IsOnline $null), « … » while it checks.
@@ -473,14 +477,14 @@ function Update-AllRowText {
 # sorts and filters them again.
 function Set-RowDescription($Row, [string]$Description) {
     $Row.Description = if ($Description) { $Description } else { $null }
-    Save-RowChange $Row.OU 'Description' $Row.Description
+    Save-RowChange $Row.DistinguishedName 'Description' $Row.Description
     Update-RowText $Row
 }
 
 function Set-RowState($Row, [bool]$Enabled) {
     $Row.Disabled = if ($Enabled) { $null } else { Tr 'Désactivé' }
     $Row.IsOn = $Enabled
-    Save-RowChange $Row.OU 'Enabled' $Enabled
+    Save-RowChange $Row.DistinguishedName 'Enabled' $Enabled
 }
 
 function Update-ChangedRow {
@@ -663,11 +667,15 @@ function Show-SearchError([string]$Text, [string]$Details) {
 # releases), for Today and with the text the filter box searches (TextProperties).
 $domainSearchScript = {
     param([string]$Domain, [string]$Filter, [string]$SearchBase, [string]$OUName, $NamedOUs, $CreatedBefore, [string]$Address, [string]$KeyId, [bool]$HasPrefix,
-          [string]$RowBuilder, [string]$SpecsPath, [datetime]$Today, [string[]]$TextProperties, [int]$Limit, [string[]]$SortBy)
+          [string]$RowBuilder, [string]$SpecsPath, [datetime]$Today, [string[]]$TextProperties, [int]$Limit, [string[]]$SortBy, $Clock)
     try {
         # Loaded once per runspace: they stay for its next searches. The row builder first: its Tr says the errors below.
         if (-not (Get-Command New-ResultRow -ErrorAction SilentlyContinue)) { . ([scriptblock]::Create($RowBuilder)) }
         if (-not (Get-Command Get-WindowsRelease -ErrorAction SilentlyContinue)) { . $SpecsPath }
+        # The page's time limit counts from here, until AD answers: its first object, or the end of a query that found
+        # none (New-SearchClock). The DNS isn't AD: its lookups, each with its own short wait, don't count as an answer.
+        if ($Clock) { $Clock.Started = [datetime]::UtcNow }
+        $heard = { process { if ($Clock -and -not $Clock.Answered) { $Clock.Answered = $true }; $_ } end { if ($Clock) { $Clock.Answered = $true } } }
         $hostNames = @()
         # Whether a DNS name gives the address searched.
         $hasAddress = {
@@ -697,7 +705,7 @@ $domainSearchScript = {
         if ($KeyId) {
             # A recovery key is an object under its computer, named "<date>{<key ID>}": those whose ID starts so, then
             # the computers above them (the key's DN without its own CN). No key: no computer, and no error.
-            $keys = @(Get-ADObject -Server $Domain -LDAPFilter "(&(objectClass=msFVE-RecoveryInformation)(name=*{$KeyId*))" -ErrorAction Stop)
+            $keys = @(Get-ADObject -Server $Domain -LDAPFilter "(&(objectClass=msFVE-RecoveryInformation)(name=*{$KeyId*))" -ErrorAction Stop | & $heard)
             $owners = @($keys | ForEach-Object { $_.DistinguishedName -replace '^CN=(?:\\.|[^,\\])+,', '' } | Select-Object -Unique)
             if (-not $owners.Count) { return [pscustomobject]@{ Domain = $Domain; NamedOUs = $NamedOUs; Rows = @(); Error = $null; Truncated = $false; Timing = $null } }
             $Filter += " -and ($(@($owners | ForEach-Object { "DistinguishedName -eq '$($_ -replace "'", "''")'" }) -join ' -or '))"
@@ -714,7 +722,7 @@ $domainSearchScript = {
             # The OUs the name finds (and their sub-OUs). With none there are no results: never fall back to a
             # domain-wide search.
             if ($null -eq $NamedOUs) {
-                $ouDNs = @(Get-ADOrganizationalUnit -Server $Domain -Filter "Name -like '$($OUName -replace "'", "''")*'" -ErrorAction Stop | ForEach-Object DistinguishedName)
+                $ouDNs = @(Get-ADOrganizationalUnit -Server $Domain -Filter "Name -like '$($OUName -replace "'", "''")*'" -ErrorAction Stop | & $heard | ForEach-Object DistinguishedName)
                 # Skip OUs inside another one found: that OU's subtree search already covers them.
                 $NamedOUs = @($ouDNs | Where-Object {
                     $dn = $_
@@ -733,9 +741,9 @@ $domainSearchScript = {
         $find = {
             param($With)
             if ($null -ne $bases) {
-                foreach ($ou in $bases) { Get-ADComputer -Server $Domain -Filter $With -SearchBase $ou -Properties $properties @bounded -ErrorAction Stop }
+                foreach ($ou in $bases) { Get-ADComputer -Server $Domain -Filter $With -SearchBase $ou -Properties $properties @bounded -ErrorAction Stop | & $heard }
             }
-            else { Get-ADComputer -Server $Domain -Filter $With -Properties $properties @bounded -ErrorAction Stop }
+            else { Get-ADComputer -Server $Domain -Filter $With -Properties $properties @bounded -ErrorAction Stop | & $heard }
         }
         $computers = & $find $Filter
         # The name the DNS gives isn't among the computers the name's box finds here (not in AD, or in another domain):
@@ -883,7 +891,7 @@ function Invoke-Search([string]$ForUser) {
 
     # Double single quotes so input like "d'accueil" doesn't break the AD filter.
     $prefix     = $prefixText.Trim() -replace "'", "''"
-    $searchTerm = $termText -replace "'", "''"
+    $searchTerm = Get-ADFilterText $termText
 
     # The name's box: that text anywhere in the name. The other box narrows it down, so both have to match.
     $filter = if ($hasPrefix) { "Name -like '*$prefix*'" } else { "Name -like '*'" }
@@ -1006,13 +1014,14 @@ function Start-DomainSearch {
         $shell = [powershell]::Create()
         $shell.RunspacePool = $script:searchPool
         $knownOUs = if ($current.OUName -and $script:namedOUs.ContainsKey("$domain|$($current.OUName)")) { , $script:namedOUs["$domain|$($current.OUName)"] } else { $null }
+        $clock = New-SearchClock
         $null = $shell.AddScript($script:domainSearchScript).AddParameters(@{
             Domain = $domain; Filter = $current.Filter; SearchBase = $current.SearchBase; OUName = $current.OUName; NamedOUs = $knownOUs; CreatedBefore = $current.CreatedBefore
             Address = $current.Address; KeyId = $current.KeyId; HasPrefix = $current.HasPrefix
             RowBuilder = $script:rowBuilderScript; SpecsPath = $script:SpecsCollectorPath; Today = $current.Today; TextProperties = $current.TextProperties
-            Limit = $current.Limit; SortBy = $current.SortBy
+            Limit = $current.Limit; SortBy = $current.SortBy; Clock = $clock
         })
-        @{ Domain = $domain; Shell = $shell; Handle = $shell.BeginInvoke(); Cancelled = $false }
+        @{ Domain = $domain; Shell = $shell; Handle = $shell.BeginInvoke(); Cancelled = $false; TimedOut = $false; Clock = $clock }
     })
 }
 
@@ -1041,7 +1050,9 @@ function Update-Search {
     }
     Start-DomainSearch
     if (-not $current.Jobs.Count) { return }
-    $pending = @($current.Jobs | Where-Object { -not $_.Handle.IsCompleted })
+    # A domain that hasn't answered in time is stopped: the others' rows don't wait for it.
+    Stop-SilentSearch $current.Jobs
+    $pending = @($current.Jobs | Where-Object { -not $_.Handle.IsCompleted -and -not $_.TimedOut })
     if ($pending.Count) {
         if ($current.Watch.ElapsedMilliseconds -ge 1000) {
             $script:resultsCount.Text = (Tr 'Recherche… (en attente : {0})') -f (@($pending | ForEach-Object { $_.Domain }) -join ', ')
@@ -1063,7 +1074,7 @@ function Stop-Search {
     $current = $script:search.Current
     if (-not $current) { return }
     foreach ($job in $current.Jobs) {
-        if (-not $job.Handle.IsCompleted) {
+        if (-not $job.Handle.IsCompleted -and -not $job.TimedOut) {
             $job.Cancelled = $true
             # Not waited for: a query stuck on an unreachable DC may only end on its own. The pool has spare runspaces
             # for the next searches meanwhile.
@@ -1117,7 +1128,14 @@ function Complete-Search {
     $truncated = [System.Collections.Generic.List[string]]::new()
     # Adresse IP: the domains that need (more of) the name to look the address up, rather than an error.
     $needs = [System.Collections.Generic.List[string]]::new()
+    # The domains stopped as they didn't answer in time (Stop-SilentSearch): an error, named apart.
+    $timedOut = [System.Collections.Generic.List[string]]::new()
     foreach ($job in $current.Jobs) {
+        if ($job.TimedOut) {
+            $errors[$job.Domain] = Get-SearchTimeoutText
+            $timedOut.Add($job.Domain)
+            continue
+        }
         if ($job.Cancelled) {
             $cancelled.Add($job.Domain)
             continue
@@ -1132,7 +1150,7 @@ function Complete-Search {
             $job.Shell.Dispose()
         }
         if ($answer.Error) {
-            Write-Host "Erreur de recherche AD ($($job.Domain)): $($answer.Error)"
+            Write-Host ((Tr 'Erreur de recherche AD ({0}) : {1}') -f $job.Domain, $answer.Error)
             $errors[$job.Domain] = $answer.Error
             continue
         }
@@ -1147,7 +1165,7 @@ function Complete-Search {
     if ($current.Changes.Count) {
         foreach ($domainRows in @($found)) {
             foreach ($row in @($domainRows)) {
-                $dn = $row.OU
+                $dn = $row.DistinguishedName
                 if ($current.Changes.ContainsKey("$dn|Removed")) { $row | Add-Member Removed $true -Force; continue }
                 # Moved during the search: the changes made after the move are kept under its new DN.
                 if ($current.Changes.ContainsKey("$dn|DistinguishedName")) {
@@ -1207,7 +1225,9 @@ function Complete-Search {
 
         # Some domains answered, others failed or were cancelled: show what was found and say which ones are missing.
         $missing = @()
-        if ($errors.Count) { $missing += (Tr 'erreur : {0}') -f ($errors.Keys -join ', ') }
+        $failed = @($errors.Keys | Where-Object { -not $timedOut.Contains($_) })
+        if ($failed.Count) { $missing += (Tr 'erreur : {0}') -f ($failed -join ', ') }
+        if ($timedOut.Count) { $missing += (Tr 'sans réponse : {0}') -f ($timedOut -join ', ') }
         if ($cancelled.Count) { $missing += (Tr 'annulé : {0}') -f ($cancelled -join ', ') }
         if ($missing.Count) {
             $script:results.ErrorText = "($($missing -join (Tr ' ; ')))"
@@ -1241,7 +1261,7 @@ function Complete-Search {
         if ($script:results.Need) { Show-AddressNeed $script:results.Need }
     }
     catch {
-        Write-Host "Erreur de recherche : $_"
+        Write-Host ((Tr 'Erreur de recherche : {0}') -f $_)
         $script:results.Failed = $true
         $script:results.NotFound = @()
         Show-ResultRow ([System.Collections.ObjectModel.ObservableCollection[object]]::new())
@@ -1413,7 +1433,7 @@ if ($script:Appearance.Columns) {
     try { Set-ColumnLayout $script:Appearance.Columns }
     catch {
         # A hand-edited settings file shouldn't keep Repère from starting.
-        Write-Host "Colonnes ignorées : $_"
+        Write-Host ((Tr 'Colonnes ignorées : {0}') -f $_)
         Set-ColumnLayout $gridColumns.Default
     }
 }
@@ -1432,44 +1452,56 @@ $win.Add_Closing({
     }
 })
 
+function Get-ComputerExportField($Columns) {
+    # The grid's columns as Exporter writes them and Copier les lignes copies them (Get-ExportField): those shown, in
+    # their order, under their headers. A column writes the property it sorts by, except where the grid shows less:
+    # - Compte, an icon: Activé or Désactivé, the words screen readers read.
+    # - Système, a short name (Win 11 24H2): it, then the whole value of its tooltip (Version de Windows), whose build
+    #   a spreadsheet sorts and counts the updates by.
+    # - Emplacement, the OU path it shows (Postes › Communs), its domain being in Domaine and the distinguished name.
+    # - En ligne, a badge and an address: in two columns, the answer (En ligne, Hors ligne) to filter by and the
+    #   address to sort by; empty for a computer Vérifier en ligne hasn't checked.
+    # Dernière connexion writes its sort key, the date as yyyy-MM-dd HH:mm, rather than the age shown (« il y a 3
+    # mois » is only true today): Excel reads it as a date whatever its language, and it sorts as text too.
+    # The distinguished name last, always: what tells two computers apart, and says their domain and OU, with Domaine
+    # and Emplacement hidden.
+    $enabled = Tr 'Activé'
+    $fields = @{
+        Disabled  = @{ Value = { param($Row) if ($Row.Disabled) { $Row.Disabled } else { $enabled } }.GetNewClosure() }
+        OSBuild   = @{ Value = 'OSShort' }, @{ Header = (Tr 'Version de Windows'); Value = 'OSFull' }
+        ShortPath = @{ Value = 'OUPath' }
+        Online    = @{ Value = 'OnlineLabel' }, @{ Header = (Tr 'Adresse IP'); Value = 'OnlineAddress' }
+    }
+    Get-ExportField $Columns $fields @(@{ Header = (Tr 'Nom distinctif'); Value = 'DistinguishedName' })
+}
+
 function Get-ComputerExportRow($Rows) {
-    # The rows as Exporter writes them and Copier les lignes copies them: the dates exact, not « il y a 3 mois ». The
-    # column names and the state in the run's language, like the grid; the values as AD has them.
-    # Translated once, not for each row.
-    $column = @{
-        Name = Tr 'Nom'; Description = Tr 'Description'; State = Tr 'Compte'; System = Tr 'Système'; Version = Tr 'Version de Windows'
-        LastLogon = Tr 'Dernière connexion'; Domain = Tr 'Domaine'; Location = Tr 'Emplacement'; DN = Tr 'Nom distinctif'
-    }
-    $enabled, $disabled = (Tr 'Activé'), (Tr 'Désactivé')
-    $Rows | ForEach-Object {
-        [pscustomobject][ordered]@{
-            ($column.Name)        = $_.ComputerName
-            ($column.Description) = $_.Description
-            ($column.State)       = if ($_.IsOn) { $enabled } else { $disabled }
-            ($column.System)      = $_.OSShort
-            ($column.Version)     = $_.OSFull
-            ($column.LastLogon)   = $_.LastLogon
-            ($column.Domain)      = $_.Domain
-            ($column.Location)    = $_.ShortPath
-            ($column.DN)          = $_.OU
-        }
-    }
+    # The rows as Exporter writes them, a property per column (Get-ComputerExportField).
+    ConvertTo-ExportRow $Rows (Get-ComputerExportField $dataGrid.Columns)
+}
+
+function Get-ComputerExportName([datetime]$Date) {
+    # The file name Exporter proposes: the domain of the search whose rows are shown, or none for several (not the list's
+    # « Tous les domaines », nor the domain chosen there since). The date in the Gregorian calendar whatever the culture's
+    # (-f would write 2569 in th-TH), so exports sort by name.
+    $searched = @(if ($results.LastSearch) { $results.LastSearch.Domains })
+    $scope = if ($searched.Count -eq 1) { '_' + ([string]$searched[0] -replace '[^\w\.\-]+', '-').ToLowerInvariant() } else { '' }
+    [string]::Format([System.Globalization.CultureInfo]::InvariantCulture, (Tr 'Repere_ordinateurs{0}_{1:yyyy-MM-dd}.csv'), $scope, $Date)
 }
 
 function Export-ShownRow {
-    # Exporter: the rows shown (after the filter, in the grid's order) as CSV, ready for French Excel: UTF-8 with a BOM
-    # so the accents show, and the culture's list separator (« ; » in French).
+    # Exporter: the rows shown (after the filter, in the grid's order) and the columns shown (Get-ComputerExportField)
+    # as CSV, ready for French Excel: UTF-8 with a BOM so the accents show, and the culture's list separator (« ; » in
+    # French).
     # $env:REPERE_EXPORT_PATH, for the UI tests, saves there without asking.
     $rows = @(if ($results.View) { foreach ($row in $results.View) { $row } })
     if (-not $rows.Count) { return }
     $path = $env:REPERE_EXPORT_PATH
     if (-not $path) {
-        $scope = if ($showDomains) { [string]$comboBoxDomain.SelectedItem } else { $defaultDomain }
         $dialog = [Microsoft.Win32.SaveFileDialog]::new()
         $dialog.Title = Tr 'Exporter les ordinateurs'
         $dialog.Filter = Tr 'Fichiers CSV (*.csv)|*.csv'
-        # The date in the Gregorian calendar whatever the culture's (-f would write 2569 in th-TH), so exports sort by name.
-        $dialog.FileName = [string]::Format([System.Globalization.CultureInfo]::InvariantCulture, 'Repere_{0}_{1:yyyy-MM-dd}.csv', ($scope -replace '[^\w\.\-]+', '-').ToLowerInvariant(), (Get-Date))
+        $dialog.FileName = Get-ComputerExportName (Get-Date)
         $dialog.InitialDirectory = [Environment]::GetFolderPath('MyDocuments')
         if (-not $dialog.ShowDialog($win)) { return }
         $path = $dialog.FileName

@@ -30,9 +30,13 @@ $script:GroupSearchTypes = [ordered]@{
 # A group search, in a search runspace: the groups of one domain, as rows. Their members aren't read (a group can hold
 # thousands): its Propriétés lists them, a few at a time. Get-OUPath comes from ComputerPage.ps1's $rowBuilderScript.
 $script:GroupSearchScript = {
-    param([string]$Domain, [string]$LdapFilter, [string]$RowBuilder, [int]$Limit, [string[]]$Entries, [bool]$Empty)
+    param([string]$Domain, [string]$LdapFilter, [string]$RowBuilder, [int]$Limit, [string[]]$Entries, [bool]$Empty, $Clock)
     try {
         if (-not (Get-Command Get-OUPath -ErrorAction SilentlyContinue)) { . ([scriptblock]::Create($RowBuilder)) }
+        # The page's time limit counts from here, until AD answers: its first object, or the end of a query that found
+        # none (New-SearchClock).
+        if ($Clock) { $Clock.Started = [datetime]::UtcNow }
+        $heard = { process { if ($Clock -and -not $Clock.Answered) { $Clock.Answered = $true }; $_ } end { if ($Clock) { $Clock.Answered = $true } } }
         # As GroupsDialog.ps1's $GroupTypes and $GroupScopes say them (Tr: the row builder's).
         $types = @{ Security = (Tr 'Sécurité'); Distribution = (Tr 'Distribution') }
         $scopes = @{ Global = (Tr 'Globale'); DomainLocal = (Tr 'Domaine local'); Universal = (Tr 'Universelle') }
@@ -53,7 +57,7 @@ $script:GroupSearchScript = {
         if ($Empty) {
             $usual = '513', '515', '516', '521'
             $unusual = "(&(objectClass=user)$(-join @(foreach ($rid in $usual) { "(!(primaryGroupID=$rid))" })))"
-            foreach ($account in @(Get-ADObject -Server $Domain -LDAPFilter $unusual -Properties primaryGroupID -ErrorAction Stop)) {
+            foreach ($account in @(Get-ADObject -Server $Domain -LDAPFilter $unusual -Properties primaryGroupID -ErrorAction Stop | & $heard)) {
                 $rid = $account.PSObject.Properties['primaryGroupID']
                 if (-not $rid -or "$($rid.Value)" -eq '') { throw ((Tr 'Groupe principal illisible pour {0} : impossible de dire quels groupes sont vides.') -f $account.Name) }
                 $null = $primary.Add("$($rid.Value)")
@@ -63,7 +67,7 @@ $script:GroupSearchScript = {
             }
             if ($Limit -gt 0) { $bounded.ResultSetSize = $Limit + 1 + $primary.Count }
         }
-        $groups = @(Get-ADGroup -Server $Domain -LDAPFilter $LdapFilter -Properties Description, mail, ManagedBy @bounded -ErrorAction Stop)
+        $groups = @(Get-ADGroup -Server $Domain -LDAPFilter $LdapFilter -Properties Description, mail, ManagedBy @bounded -ErrorAction Stop | & $heard)
         # A domain's own groups (S-1-5-21-…), not the built-in ones (S-1-5-32-…), which are no one's primary group.
         if ($Empty) { $groups = @($groups | Where-Object { -not ("$($_.SID)" -match '^S-1-5-21-.+-(\d+)$' -and $primary.Contains($Matches[1])) }) }
         $queryTime = $watch.ElapsedMilliseconds
@@ -107,20 +111,18 @@ $script:GroupSearchScript = {
 # The page once built (Initialize-GroupPage), whether it's shown, its rows and the search under way, and what makes it
 # the groups' page (SearchPage.ps1 says what each key is); its columns as the users' (Initialize-PageColumn).
 $script:GroupPage = @{ Root = $null; Shown = $false; Rows = $null; View = $null; Search = $null; Timer = $null; Filter = ''; FilterTimer = $null; Errors = $null; MultiDomain = $false
-                       LastRequest = $null; Truncated = $null; NotFound = @(); Unanswered = @()
+                       LastRequest = $null; Truncated = $null; NotFound = @(); Unanswered = @(); TimedOut = @()
                        Prefix = 'group'; Types = $script:GroupSearchTypes; SearchSetting = 'Groups'
                        Ldap = '(&(objectCategory=group){0})'; Script = $script:GroupSearchScript
                        # Sans membres: leave out the groups that are someone's primary group.
                        Parameters = { param($Type) @{ Empty = $Type.Id -eq 'Empty' } }
                        Action = 'Update-GroupAction'; Detail = 'Show-GroupDetail'; RowProperty = 'Scope'
                        Copy = 'Name'; Copied = @{ Name = (Tr 'noms'); DistinguishedName = (Tr 'noms distinctifs') }
+                       # The columns shown, each under its header and as it shows (Get-ExportField), then the
+                       # distinguished name, always: Domaine shows only after a search of several domains.
                        Export = @{
                            Title = (Tr 'Exporter les groupes'); FileName = (Tr 'Repere_groupes_{0:yyyy-MM-dd}.csv')
-                           Columns = [ordered]@{
-                               (Tr 'Nom') = 'Name'; (Tr 'Nom pré-Windows 2000') = 'SamAccountName'; (Tr 'Type') = 'Type'; (Tr 'Étendue') = 'Scope'
-                               (Tr 'Description') = 'Description'; (Tr 'Courriel') = 'Mail'; (Tr 'Géré par') = 'ManagedBy'; (Tr 'Domaine') = 'Domain'
-                               (Tr 'Emplacement') = 'OUPath'; (Tr 'Nom distinctif') = 'DistinguishedName'
-                           }
+                           Fields = @{}; Last = , @{ Header = (Tr 'Nom distinctif'); Value = 'DistinguishedName' }
                        }
                        Setting = 'GroupColumns'; Hidden = 'SamAccountName', 'Mail', 'ManagedBy'
                        # Each column's filter reads its own value, Nom's and Nom pré-Windows 2000's the text they contain (ColumnFilter.ps1).

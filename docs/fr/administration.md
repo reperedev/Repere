@@ -84,4 +84,4 @@ Le dépôt contient aussi ce que le zip n'a pas :
 - `src\FakeAD` : un AD fictif pour essayer Repère sans domaine (`-FakeAD`, depuis le dépôt seulement) ;
 - `tests` : les tests unitaires (Pester) et les tests de l'interface (`Test-RepereUI.ps1`) ;
 - `tests\Capture-Docs.ps1` : refait les captures de cette documentation, en français et en anglais (`-Language en`) ;
-- `tools\New-RepereRelease.ps1` : construit le zip d'une release et ses notes, tirées du [journal des versions](../../CHANGELOG.md).
+- `tools\New-RepereRelease.ps1` : construit le zip d'une release et ses notes, tirées du [journal des versions](../../CHANGELOG.md). La version doit aussi être dans [CHANGELOG.en.md](../../CHANGELOG.en.md), que **Nouveautés** montre en anglais.

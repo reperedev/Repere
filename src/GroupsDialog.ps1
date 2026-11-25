@@ -13,8 +13,8 @@ function Get-DomainOfDN([string]$DistinguishedName) {
 }
 
 function Get-ComputerGroup($Computer) {
-    $object = Get-ADComputer -Server $Computer.Domain -Identity $Computer.OU -Properties MemberOf, PrimaryGroup -ErrorAction Stop
-    Get-ObjectGroup $object $Computer.Domain (Read-TokenGroup { Get-ADComputer -Server $Computer.Domain -Identity $Computer.OU -Properties tokenGroups -ErrorAction Stop })
+    $object = Get-ADComputer -Server $Computer.Domain -Identity $Computer.DistinguishedName -Properties MemberOf, PrimaryGroup -ErrorAction Stop
+    Get-ObjectGroup $object $Computer.Domain (Read-TokenGroup { Get-ADComputer -Server $Computer.Domain -Identity $Computer.DistinguishedName -Properties tokenGroups -ErrorAction Stop })
 }
 
 function Read-TokenGroup([scriptblock]$Read) {

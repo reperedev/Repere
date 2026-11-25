@@ -19,7 +19,7 @@
 #   Action        the function that follows the selection (its buttons); Detail, the one that opens Propriétés…
 #                 for a row, which has RowProperty (a double-click on a header has none).
 #   Copy          the property Copier and Ctrl+C copy; Copied, each property's words for several rows.
-#   Export        Exporter's Title, FileName and Columns (CSV header = row property).
+#   Export        Exporter's Title and FileName; its Fields and Last, what the columns write (Get-ExportField).
 #   Setting, Hidden, Columns   its columns (Initialize-PageColumn).
 #   FilterSpecs   what its columns' filters read (a script block giving Initialize-ColumnFilter's Specs), and
 #                 ColumnFilter, its filters once made (ColumnFilter.ps1).
@@ -33,6 +33,44 @@ $script:SearchPages = @{}
 # Tout afficher runs it again without the limit. A one-letter prefix or « Description contient e » would otherwise make
 # a DC send a whole domain. $env:REPERE_SEARCH_LIMIT, for the UI tests, sets another (the sample data is small).
 $script:SearchLimit = if ($env:REPERE_SEARCH_LIMIT) { [int]$env:REPERE_SEARCH_LIMIT } else { 2000 }
+# How long a domain's search may go without AD sending anything back, in seconds, counted from when it starts on a
+# runspace (one waiting for a free runspace isn't counted). Past it, the domain is stopped as Annuler stops it, and the
+# other domains' rows show. Only until it answers: once AD sends its first object (or ends a query that found none), the
+# search takes as long as it needs. A whole domain is sent in pages of a few hundred objects as AD finds them, so Tout
+# afficher on a big domain isn't cut short. A DC that answers sends its first page within seconds. 20 seconds leave
+# room for the slowest case, a filter it has no index for (Nom contient, Description contient) that matches few
+# objects in a big domain: it scans until the page is full or the domain ends. Twenty seconds with nothing at all
+# means the DC has stopped answering, or the network drops what goes to it (Windows gives up on such a connection after
+# about 21). The AD module's own wait is longer, and the other domains' rows would wait for it.
+$script:SearchAnswerTimeout = 20
+
+function New-SearchClock {
+    # What a domain's search says of itself from its runspace, for its time limit (Test-SearchTimedOut): when it
+    # Started, and whether AD has Answered yet. The search scripts take it as -Clock.
+    [hashtable]::Synchronized(@{ Started = $null; Answered = $false })
+}
+
+function Test-SearchTimedOut($Job, [datetime]$Now = [datetime]::UtcNow, [int]$Timeout = $script:SearchAnswerTimeout) {
+    # Whether a domain's search, still running, started $Timeout seconds ago or more without AD having answered.
+    $clock = $Job['Clock']
+    [bool]($clock -and $Job.Handle -and -not $Job.Handle.IsCompleted -and -not $Job['Cancelled'] -and -not $Job['TimedOut'] -and
+           $clock.Started -and -not $clock.Answered -and ($Now - [datetime]$clock.Started).TotalSeconds -ge $Timeout)
+}
+
+function Stop-SilentSearch($Jobs) {
+    # The domains of a search that haven't answered in time (Test-SearchTimedOut): stopped as Annuler stops them, not
+    # waited for (Remove-StoppedJob disposes of them once they end), and TimedOut, for the search's result to say so.
+    foreach ($job in @($Jobs | Where-Object { Test-SearchTimedOut $_ })) {
+        $job.TimedOut = $true
+        $null = $job.Shell.BeginStop($null, $null)
+        $script:search.Stopping.Add($job)
+    }
+}
+
+function Get-SearchTimeoutText {
+    # Why a domain has no rows when it didn't answer in time, in the count's tooltip and the search's error.
+    (Tr 'pas de réponse après {0} secondes (contrôleur de domaine injoignable ?)') -f $script:SearchAnswerTimeout
+}
 # Each page's count and empty grid, by its prefix: one row, several ({0}: how many), none, and none for a text ({0});
 # and in the search time's tooltip, a domain's line as screen readers read it (Format-SearchTiming) and the rows'
 # column (Get-SearchTimingTable).
@@ -56,6 +94,13 @@ $script:MaxPageListEntries = 200
 function Get-LdapText([string]$Text) {
     # A value as an LDAP filter takes it: *, (, ), \ and NUL escaped, so a name with a parenthesis stays a name.
     $Text.Replace('\', '\5c').Replace('*', '\2a').Replace('(', '\28').Replace(')', '\29').Replace([string][char]0, '\00')
+}
+
+function Get-ADFilterText([string]$Text) {
+    # A text typed, as the value of a -like clause of AD's -Filter takes it: the same text and nothing else, its * a star
+    # rather than any text, its \ a backslash (LDAP's escapes, which the filter passes on as they are), its quote doubled.
+    # The filter escapes the parentheses itself.
+    $Text.Replace('\', '\5c').Replace('*', '\2a').Replace("'", "''")
 }
 
 function ConvertTo-ComputerNameList([string]$Text) {
@@ -629,8 +674,9 @@ function Start-PageJob($Page) {
     $current.Jobs = @(foreach ($searched in $request.Domains) {
         $shell = [powershell]::Create()
         $shell.RunspacePool = $script:searchPool
-        $null = $shell.AddScript($Page.Script).AddParameters(@{ Domain = $searched; LdapFilter = $request.Filter; RowBuilder = $script:rowBuilderScript; Limit = $request.Limit } + $request.Extra)
-        @{ Domain = $searched; Shell = $shell; Handle = $shell.BeginInvoke(); Cancelled = $false }
+        $clock = New-SearchClock
+        $null = $shell.AddScript($Page.Script).AddParameters(@{ Domain = $searched; LdapFilter = $request.Filter; RowBuilder = $script:rowBuilderScript; Limit = $request.Limit; Clock = $clock } + $request.Extra)
+        @{ Domain = $searched; Shell = $shell; Handle = $shell.BeginInvoke(); Cancelled = $false; TimedOut = $false; Clock = $clock }
     })
 }
 
@@ -661,8 +707,12 @@ function Update-PageSearch($Page) {
         return
     }
     Start-PageJob $Page
-    if (-not $search.Jobs.Count -or @($search.Jobs | Where-Object { -not $_.Handle.IsCompleted }).Count) { return }
+    # A domain that hasn't answered in time is stopped: the others' rows don't wait for it.
+    Stop-SilentSearch $search.Jobs
+    if (-not $search.Jobs.Count -or @($search.Jobs | Where-Object { -not $_.Handle.IsCompleted -and -not $_['TimedOut'] }).Count) { return }
     Complete-PageSearch $Page
+    # Its ticks dispose of the domains stopped once they've ended, as after Annuler.
+    if ($script:search.Stopping.Count) { $Page.Timer.Start() }
 }
 
 function Stop-PageSearch($Page) {
@@ -670,7 +720,7 @@ function Stop-PageSearch($Page) {
     $search = $Page.Search
     if (-not $search) { return }
     foreach ($job in $search.Jobs) {
-        if (-not $job.Handle.IsCompleted) {
+        if (-not $job.Handle.IsCompleted -and -not $job['TimedOut']) {
             $job.Cancelled = $true
             # Not waited for: a query stuck on an unreachable DC may only end on its own (Remove-StoppedJob).
             $null = $job.Shell.BeginStop($null, $null)
@@ -784,7 +834,14 @@ function Complete-PageSearch($Page) {
     $timings = [ordered]@{}
     # A list: the entries some domain's rows matched.
     $matched = [System.Collections.Generic.HashSet[string]]::new([System.StringComparer]::OrdinalIgnoreCase)
+    # The domains stopped as they didn't answer in time (Stop-SilentSearch): an error the count names apart.
+    $timedOut = [System.Collections.Generic.List[string]]::new()
     foreach ($job in $search.Jobs) {
+        if ($job['TimedOut']) {
+            $errors[$job.Domain] = Get-SearchTimeoutText
+            $timedOut.Add($job.Domain)
+            continue
+        }
         if ($job.Cancelled) {
             $errors[$job.Domain] = Tr 'recherche annulée'
             continue
@@ -825,6 +882,7 @@ function Complete-PageSearch($Page) {
     if ($scopeText) { $scope += ", $scopeText" }
     $root.FindName("$($prefix)_scope").Text = $scope
     $Page.Errors = $errors
+    $Page.TimedOut = @($timedOut)
     $Page.Truncated = @{ Domains = @($truncated); Limit = $search.Limit; MultiDomain = $search.Domains.Count -gt 1 }
     # A list says its entries not found above the grid rather than in it.
     $root.FindName("$($prefix)_empty_text").Text = if ($search.Text -and -not $search.Entries.Count) { $words.NoneFor -f $search.Text } else { $words.None }
@@ -883,7 +941,14 @@ function Update-PageCount($Page) {
     $limited = Get-SearchLimitText $Page.Truncated
     if ($limited) { $text += " · $limited" }
     if ($errors -and $errors.Count) {
-        $text += ' ' + ((Tr '(erreur : {0})') -f (@($errors.Keys) -join ', '))
+        # The domains that didn't answer in time apart from those that failed: they may answer if searched again.
+        $late = @($Page['TimedOut'] | Where-Object { $_ })
+        $failed = @($errors.Keys | Where-Object { $late -notcontains $_ })
+        $parts = @(
+            if ($failed.Count) { (Tr '(erreur : {0})') -f ($failed -join ', ') }
+            if ($late.Count) { (Tr '(sans réponse : {0})') -f ($late -join ', ') }
+        )
+        $text += ' ' + ($parts -join ' ')
         $count.ToolTip = ConvertTo-FrenchError (@($errors.Keys | ForEach-Object { (Tr '{0} : {1}') -f $_, $errors[$_] }) -join "`n")
         $count.SetResourceReference([System.Windows.Controls.TextBlock]::ForegroundProperty, 'R.DangerText')
     }
@@ -987,20 +1052,67 @@ filter Protect-CsvValue {
     $_
 }
 
+function Get-ExportField($Columns, [System.Collections.IDictionary]$Fields = @{}, [object[]]$Last = @()) {
+    # What Exporter writes and Copier les lignes copies, on every page (the computers' too): the grid's columns as it
+    # shows them, the ones chosen in Colonnes, in the order they're shown (a header dragged moves its column), each
+    # under its header as shown, in this run's language. $Columns: the grid's (each with its SortMemberPath, Header,
+    # Visibility and DisplayIndex). A column writes the row property it sorts by (its SortMemberPath), except those
+    # in $Fields, by key: what the grid shows there isn't the value (an icon, an age, a short name), or isn't all of
+    # it, so each gives the fields it writes instead (a Header of its own, or the column's; a Value, a row property or
+    # a script block given the row). $Last: written after them whatever is shown, for what tells a row apart and
+    # where it is once in a spreadsheet, the distinguished name. A column hidden in the grid stays out of the file:
+    # what was hidden on purpose isn't wanted there either.
+    $list = [System.Collections.Generic.List[object]]::new()
+    foreach ($column in @($Columns | Where-Object { "$($_.Visibility)" -eq 'Visible' } | Sort-Object { [int]$_.DisplayIndex })) {
+        $key = [string]$column.SortMemberPath
+        $specs = if ($null -ne $Fields -and $Fields.Contains($key)) { $Fields[$key] } else { @{ Value = $key } }
+        foreach ($spec in @($specs)) { $list.Add(@{ Header = $(if ($spec['Header']) { [string]$spec['Header'] } else { [string]$column.Header }); Value = $spec['Value'] }) }
+    }
+    foreach ($spec in @($Last)) {
+        # Unless a column shows it already.
+        if ($spec -and -not @($list | Where-Object { $_.Header -eq $spec['Header'] }).Count) { $list.Add(@{ Header = [string]$spec['Header']; Value = $spec['Value'] }) }
+    }
+    , $list.ToArray()
+}
+
+function ConvertTo-ExportRow($Rows, [object[]]$Fields) {
+    # The rows as Exporter writes them: one object each, a property per field (Get-ExportField), in its order.
+    foreach ($row in @($Rows)) {
+        $line = [ordered]@{}
+        foreach ($field in $Fields) { $line[$field.Header] = if ($field.Value -is [scriptblock]) { & $field.Value $row } else { $row.($field.Value) } }
+        [pscustomobject]$line
+    }
+}
+
+function Get-RowClipboardText($Rows, [object[]]$Fields) {
+    # Copier les lignes: the rows as Exporter writes them, a line each and a tab between the columns (Format-RowLine),
+    # to paste into Excel or a ticket. Without the header: a paste goes under the rows already there.
+    $lines = foreach ($line in @(ConvertTo-ExportRow $Rows $Fields)) {
+        $properties = @($line.PSObject.Properties)
+        $values = [object[]]::new($properties.Count)
+        for ($i = 0; $i -lt $properties.Count; $i++) { $values[$i] = $properties[$i].Value }
+        Format-RowLine $values
+    }
+    @($lines) -join [Environment]::NewLine
+}
+
+function Get-PageExportField($Page) {
+    # A page's columns as Exporter writes them: its grid's, with what its Export says (Fields, Last).
+    Get-ExportField $Page.Root.FindName("$($Page.Prefix)_grid").Columns $Page.Export.Fields $Page.Export.Last
+}
+
 function Copy-PageRow($Page) {
     # Copier les lignes: the selected rows as Exporter writes them, to paste into Excel or a ticket.
     $selected = Get-PageSelection $Page
     if (-not $selected.Count) { return }
-    $properties = @($Page.Export.Columns.Values)
-    $lines = foreach ($row in $selected) { Format-RowLine @($properties | ForEach-Object { $row.$_ }) }
-    Set-Clipboard -Value (@($lines) -join [Environment]::NewLine)
+    Set-Clipboard -Value (Get-RowClipboardText $selected (Get-PageExportField $Page))
     Show-ActionNotice (Tr 'Copié dans le presse-papiers') $(if ($selected.Count -eq 1) { Tr '✔ 1 ligne copiée' } else { (Tr '✔ {0} lignes copiées') -f $selected.Count })
 }
 
 function Export-PageRow($Page) {
     # Exporter: the rows shown (after the filter, in the grid's order) as CSV for French Excel, like the computers': UTF-8
-    # with a BOM, the culture's list separator, exact dates. $env:REPERE_EXPORT_PATH, for the UI tests, saves there
-    # without asking.
+    # with a BOM, the culture's list separator, the columns shown (Get-ExportField), exact dates.
+    # $env:REPERE_EXPORT_PATH, for the UI tests, saves there without asking.
     $rows = @(foreach ($row in $Page.View) { $row })
     if (-not $rows.Count) { return }
     $export = $Page.Export
@@ -1017,11 +1129,7 @@ function Export-PageRow($Page) {
     }
     $time = $Page.Root.FindName("$($Page.Prefix)_time")
     try {
-        $lines = $rows | ForEach-Object {
-            $line = [ordered]@{}
-            foreach ($header in $export.Columns.Keys) { $line[$header] = $_.($export.Columns[$header]) }
-            [pscustomobject]$line
-        } | Protect-CsvValue | ConvertTo-Csv -Delimiter (Get-Culture).TextInfo.ListSeparator -UseQuotes AsNeeded
+        $lines = ConvertTo-ExportRow $rows (Get-PageExportField $Page) | Protect-CsvValue | ConvertTo-Csv -Delimiter (Get-Culture).TextInfo.ListSeparator -UseQuotes AsNeeded
         Set-Content -LiteralPath $path -Value $lines -Encoding utf8BOM -ErrorAction Stop
         $time.Text = if ($rows.Count -eq 1) { Tr '· 1 ligne exportée' } else { (Tr '· {0} lignes exportées') -f $rows.Count }
         # The file's path in place of the search's times, which go with the text they explained.
@@ -1118,7 +1226,7 @@ function Initialize-PageColumn($Page) {
     if ($saved) {
         try { Set-PageColumnLayout $Page $saved }
         catch {
-            Write-Host "Colonnes ignorées ($($Page.Setting)) : $_"
+            Write-Host ((Tr 'Colonnes ignorées ({0}) : {1}') -f $Page.Setting, $_)
             Set-PageColumnLayout $Page $columns.Default
         }
     }
