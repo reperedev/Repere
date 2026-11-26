@@ -1481,7 +1481,7 @@
         @('Vérification SCCM impossible : {0}. Non vérifié dans SCCM.', 'Couldn''t check SCCM: {0}. Not checked in SCCM.'),
         @('Vérification SCCM impossible : {0}.', 'Couldn''t check SCCM: {0}.'),
         @('Dans SCCM.', 'In SCCM.'),
-        @('Introuvable dans SCCM (avec vos accès).', 'Not found in SCCM (with your access).'),
+        @('Libre dans SCCM (avec vos accès).', 'Free in SCCM (with your access).'),
         @('SCCM', 'SCCM'),
         @('Pour que « Prochain nom… » vérifie aussi dans SCCM.', 'So that "Next name…" also checks SCCM.'),
         @('Code du site', 'Site code'),

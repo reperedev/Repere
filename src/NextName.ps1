@@ -817,7 +817,7 @@ function Show-NextNameResult {
 }
 
 function Show-NextNameSccm($Sccm, $Known, $Series, [string[]]$Name, [bool]$Varies) {
-    # What SCCM said of the names given, in its three cases, which never read alike: in SCCM, not found there (with the
+    # What SCCM said of the names given, in its three cases, which never read alike: in SCCM, free there (with the
     # account's access: SCCM doesn't say what it hides), and couldn't be asked. The names it has were skipped.
     if (-not $Sccm) { return }
     $block = $script:NextNameDialog.Root.FindName('next_sccm_result')
@@ -828,9 +828,9 @@ function Show-NextNameSccm($Sccm, $Known, $Series, [string[]]$Name, [bool]$Varie
         return
     }
     $block.SetResourceReference([System.Windows.Documents.TextElement]::ForegroundProperty, 'R.Muted')
-    if (-not $Varies) { $block.Text = if ($Known.Taken.Contains($Series.Template)) { Tr 'Dans SCCM.' } else { Tr 'Introuvable dans SCCM (avec vos accès).' } }
+    if (-not $Varies) { $block.Text = if ($Known.Taken.Contains($Series.Template)) { Tr 'Dans SCCM.' } else { Tr 'Libre dans SCCM (avec vos accès).' } }
     elseif (-not $Name.Count) { $block.Text = '' }
-    else { $block.Text = Tr 'Introuvable dans SCCM (avec vos accès).' }
+    else { $block.Text = Tr 'Libre dans SCCM (avec vos accès).' }
     $block.Visibility = ConvertTo-Visibility ([bool]$block.Text)
 }
 

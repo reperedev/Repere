@@ -6980,7 +6980,7 @@ function Test-NextNameSccm {
         $name = Wait-NextName $dialog 'ORD-15'
         if ($name -ne 'ORD-15') { $problems.Add("next name '$name', expected ORD-15 past SCCM's ORD-13 and ORD-14") }
         $result = Get-DialogPartName $dialog 'next_sccm_result'
-        if ($result -ne 'Introuvable dans SCCM (avec vos accès).') { $problems.Add("SCCM: '$result'") }
+        if ($result -ne 'Libre dans SCCM (avec vos accès).') { $problems.Add("SCCM: '$result'") }
         $count = Get-DialogPartName $dialog 'next_count_text'
         # AD's only: SCCM was asked about the names to give, not the whole series.
         if ($count -ne '99 noms possibles, 12 déjà pris') { $problems.Add("with SCCM, the count says '$count'") }
