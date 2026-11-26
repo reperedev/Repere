@@ -1,7 +1,7 @@
 ﻿# Paramètres: one window for what Repère lets the user set, in sections chosen on the left: Apparence (the mode, the themes
 # and their editor, the text and the language, Theme.ps1), Déplacer vers (the OUs offered by « Déplacer vers… », which it
 # picks in a tree, beside the ones chosen), Redémarrage (the defaults of
-# « Redémarrer… », RestartDialog.ps1), SCCM (the site Prochain nom… asks, NextName.ps1) and Raccourcis (the keyboard shortcuts, to read). Built the first time it's
+# « Redémarrer… », RestartDialog.ps1), SCCM (the site Prochain nom… asks, Sccm.ps1) and Raccourcis (the keyboard shortcuts, to read). Built the first time it's
 # opened, then hidden rather than closed. Dot-sourced by the main script, after Theme.ps1 and
 # RestartDialog.ps1; the Déplacer vers section uses the OU lookup of ComputerActions.ps1 (Get-MoveTarget, $ouCache).
 #
@@ -233,7 +233,7 @@ function Get-SettingsWindowXaml {
         <TextBlock x:Name="settings_sccm_status" Style="{StaticResource Txt.Muted}" Margin="0,12,0,0" TextWrapping="Wrap" Visibility="Collapsed"/>
         <Grid Margin="0,16,0,0">
           <Grid.ColumnDefinitions><ColumnDefinition Width="Auto"/><ColumnDefinition Width="*"/></Grid.ColumnDefinitions>
-          <Button x:Name="settings_sccm_test" VerticalAlignment="Top" Content="Tester" ToolTip="Demande à ce site un nom qui n'existe pas"/>
+          <Button x:Name="settings_sccm_test" VerticalAlignment="Top" Content="Tester" ToolTip="Cherche cet ordinateur sur ce site et lit son inventaire"/>
           <TextBlock x:Name="settings_sccm_test_status" Grid.Column="1" Style="{StaticResource Txt.Muted}" VerticalAlignment="Center" Margin="12,0,0,0" TextWrapping="Wrap"/>
         </Grid>
       </StackPanel>
@@ -489,21 +489,22 @@ function Connect-SccmSetting($Root) {
         $site, $server = (Get-SccmSettingField)
         if (-not $site -and -not $server) { $status.Text = Tr 'Entrez un site et son serveur pour les tester.'; return }
         $status.Text = Tr 'Test en cours…'
-        # One test at a time: a site that doesn't answer holds a search runspace up to SccmTimeoutSeconds, and a few
-        # clicks would hold them all, the main window's searches then waiting. Tester comes back with the answer,
+        # One test at a time: a site that doesn't answer holds a search runspace up to SccmTotalSeconds
+        # (Get-SccmReadTimeout), and a few clicks would hold them all, the main window's searches then waiting. Tester comes back with the answer,
         # whatever it is.
         $button.IsEnabled = $false
         try {
-            Start-BackgroundRead -Command 'Get-SccmCheck' -Arguments @(@{ Site = $site.ToUpperInvariant(); Server = $server }, 'REPERE-TEST-') -Functions 'Get-ErrorKind' `
-                -Variables (Get-SccmReadVariable) -Timeout ($script:ReadTimeout + $script:SccmTimeoutSeconds) -Context @{ Site = $site.ToUpperInvariant(); Button = $button } -OnDone {
-                param($context, $check, $problem)
+            $sccm = @{ Site = $site.ToUpperInvariant(); Server = $server }
+            Start-BackgroundRead -Command 'Get-SccmTest' -Arguments @(, $sccm) -Functions (Get-SccmReadFunction) -Variables (Get-SccmReadVariable) `
+                -Timeout (Get-SccmReadTimeout) -Context @{ Sccm = $sccm; Button = $button } -OnDone {
+                param($context, $test, $problem)
                 # Even with Paramètres closed meanwhile: it's only hidden, and the next opening can test again.
                 $context.Button.IsEnabled = $true
                 Start-SccmStopSweep
                 # Repère may be closing by the time the answer comes.
                 if (-not $script:Settings.Root) { return }
-                $reason = if ($problem) { ConvertTo-FrenchError $problem } elseif (-not $check.Checked) { $check.Reason }
-                $script:Settings.Root.FindName('settings_sccm_test_status').Text = if ($reason) { (Tr 'Vérification SCCM impossible : {0}.') -f $reason } else { (Tr 'Le site {0} répond.') -f $context.Site }
+                $script:Settings.Root.FindName('settings_sccm_test_status').Text = if ($problem) { (Tr 'Vérification SCCM impossible : {0}.') -f (ConvertTo-FrenchError $problem) }
+                else { Format-SccmTest $test $context.Sccm }
             }
         }
         catch {

@@ -113,7 +113,7 @@ Good to know:
 - **Search** (or Enter) reads AD again, for a computer added since;
 - the name is **not reserved**: someone else can take it in the meantime.
 
-With SCCM, each name is **In SCCM**, **Not in SCCM**, or Repère **couldn't check SCCM**, with the reason. It needs the site in **Settings › SCCM**, the Configuration Manager console on this computer, and read access to SCCM.
+With SCCM, each name is **In SCCM**, **Not found in SCCM (with your access)**, or Repère **couldn't check SCCM**, with the reason. SCCM may show your account only some of the computers: a name it hides looks not found. It needs the site in **Settings › SCCM**, the Configuration Manager console on this computer, and read access to SCCM.
 
 ## Users
 
@@ -146,7 +146,7 @@ The **Settings** button, at the top right, has these pages:
 - **Move to**: the OUs offered to move a computer to.
 - **Restart**: the delay and message **Restart…** suggests.
 - **Passwords**: a generated password, or always the same temporary password, kept encrypted for your Windows account.
-- **SCCM**: the site code and server **Next name…** checks, with **Test**.
+- **SCCM**: the site code and server **Next name…** checks, with **Test**, which says whether the site answers, through which server, and whether this computer's inventory can be read.
 - **Shortcuts**: the list of keyboard shortcuts.
 
 Everything saves without a button: when you leave a box, change pages or close the window.

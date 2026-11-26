@@ -9,6 +9,7 @@
   - **Propriétés**, **Mot de passe LAPS** et **Clés BitLocker** disent la même chose au bout de 30 secondes, au lieu d'attendre sans fin.
 - **Exporter et Copier les lignes suivent la grille** : les colonnes affichées, dans leur ordre, sous leur titre, et le nom distinctif en dernier. Une colonne masquée n'est plus exportée : par défaut, **Courriel** sur Utilisateurs et **Géré par** sur Groupes.
 - **Les erreurs de Windows sont comprises dans toutes les langues** : accès refusé, ordinateur injoignable, WinRM fermé ou site SCCM introuvable sont reconnus par leur code, et plus seulement par leur texte en français ou en anglais.
+- **SCCM** : « Pas dans SCCM » devient « Introuvable dans SCCM (avec vos accès) », car SCCM peut cacher des ordinateurs à votre compte. **Paramètres › SCCM › Tester** dit aussi si l'inventaire de cet ordinateur est lisible, et par quel serveur le site répond quand ce n'est pas celui des Paramètres. La console n'est chargée qu'une fois : les vérifications suivantes sont plus rapides.
 - **Nouveautés est en anglais** quand Repère l'est, à partir de cette version, comme les questions du lanceur (PowerShell 7.5 absent) et les messages de la console.
 
 ### Ordinateurs

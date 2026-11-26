@@ -111,7 +111,7 @@ Bon à savoir :
 - **Rechercher** (ou Entrée) relit l'AD, pour un ordinateur ajouté depuis ;
 - le nom n'est **pas réservé** : quelqu'un d'autre peut le prendre entre-temps.
 
-Avec SCCM, chaque nom est **Dans SCCM**, **Pas dans SCCM** ou **Vérification SCCM impossible**, avec la raison. Il faut le site dans **Paramètres › SCCM**, la console Configuration Manager sur cet ordinateur et des droits de lecture sur SCCM.
+Avec SCCM, chaque nom est **Dans SCCM**, **Introuvable dans SCCM (avec vos accès)** ou **Vérification SCCM impossible**, avec la raison. SCCM peut ne montrer qu'une partie des ordinateurs à votre compte : un nom qu'il cache paraît introuvable. Il faut le site dans **Paramètres › SCCM**, la console Configuration Manager sur cet ordinateur et des droits de lecture sur SCCM.
 
 ## Utilisateurs
 
@@ -144,7 +144,7 @@ Le bouton **Paramètres**, en haut à droite, a ces pages :
 - **Déplacer vers** : les OU proposées pour déplacer un ordinateur.
 - **Redémarrage** : le délai et le message proposés par **Redémarrer…**.
 - **Mots de passe** : un mot de passe généré, ou toujours le même mot de passe temporaire, gardé chiffré pour votre compte Windows.
-- **SCCM** : le code du site et le serveur où **Prochain nom…** vérifie, avec **Tester**.
+- **SCCM** : le code du site et le serveur où **Prochain nom…** vérifie, avec **Tester**, qui dit si le site répond, par quel serveur, et si l'inventaire de cet ordinateur est lisible.
 - **Raccourcis** : la liste des raccourcis clavier.
 
 Tout s'enregistre sans bouton : en quittant une case, en changeant de page ou en fermant la fenêtre.

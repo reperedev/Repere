@@ -10,7 +10,7 @@
 # even ORD-AAAA-#### is never enumerated (Get-NextName).
 #
 # prochainnom.json keeps the recent formats and the options. Nothing is reserved or written: AD and SCCM are only read.
-# Dot-sourced by the main script, after SettingsWindow.ps1 and Background.ps1; the action bar's button, the results' right-click
+# Dot-sourced by the main script, after SettingsWindow.ps1, Background.ps1 and Sccm.ps1; the action bar's button, the results' right-click
 # menu and Ctrl+N open the window (ComputerActions.ps1).
 #
 # Control names double as UI Automation ids for tests\Test-RepereUI.ps1.
@@ -24,15 +24,6 @@ $script:NextNameDomainsInPlace = 3
 $script:NameLengthLimit = 15
 # The window's height at the usual text size: a format's series, blocks, three names and SCCM's line, without scrolling.
 $script:NextNameHeight = 680
-# How long SCCM has to answer: its module alone can take several seconds to load.
-$script:SccmTimeoutSeconds = 60
-# The SCCM checks that ran out of time (Get-SccmCheck), each its shell and the handle of its stop: a stop can take as
-# long as SCCM does, so the check doesn't wait for it, and the timer disposes the shell, its runspace and the module it
-# loaded, once stopped (Clear-SccmStopping). The search runspaces add to this same queue (Get-SccmReadVariable).
-$script:SccmStopping = [System.Collections.Concurrent.ConcurrentQueue[object]]::new()
-$script:SccmStopTimer = [System.Windows.Threading.DispatcherTimer]::new()
-$script:SccmStopTimer.Interval = [timespan]::FromSeconds(1)
-$script:SccmStopTimer.Add_Tick({ Clear-SccmStopping })
 # The window's state while it's open: its controls (Root), the format (Blocks), the last read and those under way.
 $script:NextNameDialog = $null
 # After Configurer…, the way back once Paramètres closes (Resume-NextNameDialog): the owner, the icon and the format.
@@ -270,126 +261,6 @@ function Get-NameSeriesChoice([string]$Start, [string[]]$Name, [int]$Limit = 6) 
         ForEach-Object { [pscustomobject]@{ Format = $_.Name; Count = $_.Value.Count; Accounts = $accounts[$_.Name] } }
 }
 
-# The names SCCM has that match $Name: the console's own steps, then Get-CMDevice -Resource. In a runspace of its own
-# (Get-SccmCheck): the cmdlets only run from the site's drive, a location the search runspaces mustn't keep, and a site
-# that doesn't answer can be left behind. The console adds its module to PSModulePath since version 2111; before that,
-# SMS_ADMIN_UI_PATH says where it is. $FakeModule stands in for it with the fake AD.
-$script:SccmReadScript = {
-    param([string]$Site, [string]$Server, [string]$Name, [string]$FakeModule)
-    $ErrorActionPreference = 'Stop'
-    if ($FakeModule) { Import-Module $FakeModule }
-    elseif (Get-Module -ListAvailable ConfigurationManager) { Import-Module ConfigurationManager }
-    elseif ($env:SMS_ADMIN_UI_PATH) { Import-Module (Join-Path $env:SMS_ADMIN_UI_PATH '..\ConfigurationManager.psd1') }
-    else { throw 'ConfigurationManager module not found' }
-    # The module mounts the site the console last used by itself.
-    if (-not (Get-PSDrive -Name $Site -PSProvider CMSite -ErrorAction SilentlyContinue)) {
-        $null = New-PSDrive -Name $Site -PSProvider CMSite -Root $Server -Scope Global
-    }
-    Set-Location "$($Site):\"
-    Get-CMDevice -Name $Name -Resource -WarningAction SilentlyContinue | ForEach-Object { [string]$_.Name }
-}
-
-function Get-SccmReadVariable {
-    # What a read needs on a search runspace to call Get-SccmCheck, as Start-BackgroundRead's -Variables.
-    @{
-        SccmTimeoutSeconds = $script:SccmTimeoutSeconds; SccmReadScript = [string]$script:SccmReadScript; SccmStopping = $script:SccmStopping
-        FakeSccmModule = $(if ($script:fakeADModule) { Join-Path (Split-Path $script:fakeADModule) 'FakeSccm.psm1' })
-    }
-}
-
-function Get-SccmCheck($Sccm, [string]$Start) {
-    # SCCM's answer: Checked is $true with its Names, or $false with the Reason why it couldn't be asked. Never an empty
-    # list for a check that failed: « not in SCCM » has to mean SCCM said so. The wildcard is Get-CMDevice's: what it
-    # returns can be wider than the series, which the series' Regex narrows down.
-    $shell = [powershell]::Create()
-    $null = $shell.AddScript([string]$script:SccmReadScript).AddArgument($Sccm.Site).AddArgument($Sccm.Server).AddArgument("$Start*").AddArgument($script:FakeSccmModule)
-    $handle = $shell.BeginInvoke()
-    $limit = [datetime]::UtcNow.AddSeconds($script:SccmTimeoutSeconds)
-    try {
-        while (-not $handle.IsCompleted -and [datetime]::UtcNow -lt $limit) { Start-Sleep -Milliseconds 100 }
-        if (-not $handle.IsCompleted) { return @{ Checked = $false; Names = @(); Reason = (Tr 'SCCM n''a pas répondu en {0} secondes') -f $script:SccmTimeoutSeconds } }
-        @{ Checked = $true; Names = @($shell.EndInvoke($handle) | ForEach-Object { [string]$_ }); Reason = '' }
-    }
-    catch {
-        # The module's own error: an error it writes stops the script (ErrorActionPreference), and comes wrapped in
-        # PowerShell's « La commande en cours d'exécution s'est arrêtée, car… : », which says nothing more (#329).
-        $failure = if ($_.Exception.InnerException) { $_.Exception.InnerException } else { $_.Exception }
-        $message = if ($failure -is [System.Management.Automation.ActionPreferenceStopException] -and $failure.ErrorRecord) { $failure.ErrorRecord.Exception.Message } else { $failure.Message }
-        $message = "$message".Trim() -replace '^(?:The running command stopped because|La commande en cours d.ex.cution s.est arr.t.e)[^:]*:\s*'
-        # A site not found, or a server that doesn't answer: by the error's codes (Get-ErrorKind), whatever Windows'
-        # language, then by its text in English or French. The module not found is Repère's own text
-        # ($SccmReadScript), the same in every language. The console's version has no code of its own Repère knows:
-        # its text only.
-        $kinds = @(Get-ErrorKind $_)
-        $reason = if ($message -match 'ConfigurationManager module not found') { Tr 'la console Configuration Manager n''est pas installée sur cet ordinateur' }
-        # The site was upgraded, not this console: its cmdlets could harm the site, so SCCM stays not checked.
-        elseif ($message -match '(?:A new version of the console is available|nouvelle version de la console est disponible)\s*\((?<version>[\d.]+)\)') {
-            (Tr 'la console Configuration Manager doit être mise à jour (version {0})') -f $Matches.version
-        }
-        elseif ($kinds -contains 'InvalidNamespace') { (Tr 'le site {0} est introuvable sur {1}') -f $Sccm.Site, $Sccm.Server }
-        elseif ($kinds -contains 'RpcUnavailable') { (Tr '{0} ne répond pas') -f $Sccm.Server }
-        elseif (-not $kinds.Count -and $message -match 'namespace|espace de noms') { (Tr 'le site {0} est introuvable sur {1}') -f $Sccm.Site, $Sccm.Server }
-        elseif (-not $kinds.Count -and $message -match 'RPC') { (Tr '{0} ne répond pas') -f $Sccm.Server }
-        else {
-            # Any other: its first sentence, without its period (the line that shows it adds its own).
-            $first = @((ConvertTo-FrenchError $message) -split '\r?\n')[0].Trim()
-            if ($first -match '^(.+?)[.!?](?:\s|$)') { $first = $Matches[1] }
-            $first.TrimEnd('.')
-        }
-        @{ Checked = $false; Names = @(); Reason = $reason }
-    }
-    finally {
-        # Out of time, or the read that asked was stopped: the shell is stopped without waiting, and disposed by the
-        # window's timer once it has, never before (nothing then runs on it).
-        if ($handle.IsCompleted) { $shell.Dispose() }
-        else {
-            $stop = $shell.BeginStop($null, $null)
-            if ($null -ne $script:SccmStopping) { $script:SccmStopping.Enqueue(@{ Shell = $shell; Stop = $stop }) }
-        }
-    }
-}
-
-function Clear-SccmStopping {
-    # The timer's tick: the checks whose stop has completed, disposed; the others wait for the next tick, and the timer
-    # stops once none is left. On the window's thread, so nothing it does throws.
-    $queue = $script:SccmStopping
-    for ($left = $queue.Count; $left -gt 0; $left--) {
-        $entry = $null
-        if (-not $queue.TryDequeue([ref]$entry)) { break }
-        if (-not $entry.Stop.IsCompleted) { $queue.Enqueue($entry); continue }
-        try { $entry.Shell.EndStop($entry.Stop) } catch { Write-Verbose "Vérification SCCM arrêtée : $_" }
-        try { $entry.Shell.Dispose() } catch { Write-Verbose "Vérification SCCM non libérée : $_" }
-    }
-    if (-not $queue.Count) { $script:SccmStopTimer.Stop() }
-}
-
-function Start-SccmStopSweep {
-    # A read that may have called Get-SccmCheck has ended (its OnDone): the timer runs while a check is still stopping.
-    if ($script:SccmStopping.Count) { $script:SccmStopTimer.Start() }
-}
-
-function Read-SccmSetting {
-    # The site saved in Paramètres, as Get-SccmCheck takes it, or $null without one.
-    $saved = Read-JsonSetting $script:SettingsPath SccmSite, SccmServer
-    if (-not $saved -or -not $saved.SccmSite -or -not $saved.SccmServer) { return }
-    if (Get-SccmSettingProblem $saved.SccmSite $saved.SccmServer) { return }
-    @{ Site = ([string]$saved.SccmSite).ToUpperInvariant(); Server = [string]$saved.SccmServer }
-}
-
-function Get-SccmSettingProblem([string]$Site, [string]$Server) {
-    # What's wrong with a site code and server, in words (the site's first); nothing when they're fine.
-    $problem = Get-SccmFieldProblem $Site $Server
-    if ($problem.Site) { $problem.Site } elseif ($problem.Server) { $problem.Server }
-}
-
-function Get-SccmFieldProblem([string]$Site, [string]$Server) {
-    # What's wrong with each: Site and Server, $null for one that's fine. Paramètres says each under its box.
-    @{
-        Site   = if ($Site -notmatch '^[A-Za-z0-9]{3}$') { Tr 'Le code du site a 3 lettres ou chiffres, ex. P01.' }
-        Server = if ($Server -notmatch '^[A-Za-z0-9][A-Za-z0-9.-]*$') { Tr 'Le serveur est un nom, ex. sccm.exemple.local.' }
-    }
-}
-
 function Read-NextNameSetting {
     # The options as prochainnom.json keeps them; what's missing or not offered keeps its default.
     $setting = @{ Recent = @(); Random = $false; FillGaps = $false; Count = 3; Exclude = ''; Sccm = $true; Domains = @() }
@@ -438,6 +309,8 @@ function Get-FailedDomainText($Failed) {
 function Get-NextNameRead([string]$Start, [string[]]$Domains, $Sccm) {
     # On a search runspace: the names that start with $Start in each domain, in the same list since a name is taken in
     # any of them, the domains that didn't answer (Failed), and SCCM's answer when $Sccm is given.
+    # SCCM gets what's left of the read's time once the domains have answered (Get-SccmReadTimeout).
+    $until = [datetime]::UtcNow.AddSeconds($script:ReadTimeout + $script:SccmTotalSeconds)
     $names = [System.Collections.Generic.List[string]]::new()
     $failed = [System.Collections.Generic.List[hashtable]]::new()
     foreach ($domain in $Domains) {
@@ -446,7 +319,7 @@ function Get-NextNameRead([string]$Start, [string[]]$Domains, $Sccm) {
         }
         catch { $failed.Add(@{ Domain = $domain; Reason = ConvertTo-FrenchError $_.Exception.Message }) }
     }
-    @{ Names = $names.ToArray(); Failed = $failed.ToArray(); Sccm = $(if ($Sccm) { Get-SccmCheck $Sccm $Start }) }
+    @{ Names = $names.ToArray(); Failed = $failed.ToArray(); Sccm = $(if ($Sccm) { Get-SccmCheck $Sccm $Start $until }) }
 }
 
 $script:NextNameXaml = @'
@@ -764,14 +637,14 @@ function Stop-NextNameRead($State) {
 
 function Start-NextNameRead {
     # The read Update-NextNameRead asked for. A later change makes its answer useless: ReadId says so. Its time limit is
-    # the reads' and SCCM's own (SccmTimeoutSeconds), which it may wait for after the domains.
+    # the reads' and SCCM's own (Get-SccmReadTimeout), which it may wait for after the domains.
     $state = $script:NextNameDialog
     $state.Timer.Stop()
     if (-not $state -or $state.Closed) { return }
     $wanted = $state.Wanted
     Stop-NextNameRead $state
     Start-BackgroundRead -Command 'Get-NextNameRead' -Arguments @($wanted.Start, $wanted.Domains, $wanted.Sccm) `
-        -Functions 'Get-SccmCheck', 'Get-ErrorKind' -Variables (Get-SccmReadVariable) -Timeout ($script:ReadTimeout + $script:SccmTimeoutSeconds) `
+        -Functions (Get-SccmReadFunction) -Variables (Get-SccmReadVariable) -Timeout (Get-SccmReadTimeout) `
         -Context @{ State = $state; Id = $state.ReadId; Wanted = $wanted } -OnDone {
         param($context, $read, $problem)
         $state = $context.State
@@ -883,7 +756,8 @@ function Show-NextNameResult {
 }
 
 function Show-NextNameSccm($Check, $Series, [string[]]$Name, [bool]$Varies) {
-    # What SCCM said, in its three cases, which never read alike: in SCCM, not in SCCM, and couldn't be asked.
+    # What SCCM said, in its three cases, which never read alike: in SCCM, not found there (with
+    # the account's access: SCCM doesn't say what it hides), and couldn't be asked.
     if (-not $Check) { return }
     $block = $script:NextNameDialog.Root.FindName('next_sccm_result')
     $block.Visibility = 'Visible'
@@ -894,10 +768,10 @@ function Show-NextNameSccm($Check, $Series, [string[]]$Name, [bool]$Varies) {
     }
     $block.SetResourceReference([System.Windows.Documents.TextElement]::ForegroundProperty, 'R.Muted')
     $found = @($Check.Names | Where-Object { $Series.Regex.IsMatch($_) })
-    if (-not $Varies) { $block.Text = if ($found.Count) { Tr 'Dans SCCM.' } else { Tr 'Pas dans SCCM.' } }
+    if (-not $Varies) { $block.Text = if ($found.Count) { Tr 'Dans SCCM.' } else { Tr 'Introuvable dans SCCM (avec vos accès).' } }
     # The names SCCM has in the series are counted on the line above (« seulement dans SCCM »), never twice here.
     elseif (-not $Name.Count) { $block.Text = '' }
-    else { $block.Text = Tr 'Pas dans SCCM.' }
+    else { $block.Text = Tr 'Introuvable dans SCCM (avec vos accès).' }
     $block.Visibility = ConvertTo-Visibility ([bool]$block.Text)
 }
 

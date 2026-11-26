@@ -291,7 +291,10 @@ Describe 'What SCCM is asked' {
             $script:Site = @{ Site = 'DEM'; Server = 'sccm.demo.local' }
         }
 
-        AfterAll { $env:REPERE_FAKEAD_SCCM_UNREACHABLE = $null; $env:REPERE_FAKEAD_SCCM_ERROR = $null }
+        # Each opens the site afresh.
+        BeforeEach { Close-SccmRunspace $script:SccmLink }
+
+        AfterAll { $env:REPERE_FAKEAD_SCCM_UNREACHABLE = $null; $env:REPERE_FAKEAD_SCCM_ERROR = $null; Close-SccmRunspace $script:SccmLink }
 
         It 'Finds the names that start with the text' {
             $check = Get-SccmCheck $Site 'ORD-'
@@ -336,6 +339,7 @@ Describe 'What SCCM is asked' {
             )
             foreach ($case in $cases) {
                 $env:REPERE_FAKEAD_SCCM_ERROR = $case[0]
+                Close-SccmRunspace $script:SccmLink
                 try { $check = Get-SccmCheck $Site 'ORD-' }
                 finally { $env:REPERE_FAKEAD_SCCM_ERROR = $null }
                 $check.Checked | Should -BeFalse
@@ -559,13 +563,14 @@ Export-ModuleMember -Function Get-PSDrive, New-PSDrive
     }
 }
 
-Describe 'A read that calls Get-SccmCheck' {
-    It 'Is given Get-ErrorKind too, which a runspace does not have' {
+Describe 'A read that asks SCCM' {
+    It 'Is given all that asks SCCM needs, which a runspace does not have' {
         foreach ($file in 'NextName.ps1', 'SettingsWindow.ps1') {
             $ast = Get-RepereScriptAst (Join-Path $script:RepereSource $file)
-            $reads = @($ast.FindAll({ param($node) $node -is [System.Management.Automation.Language.CommandAst] -and $node.GetCommandName() -eq 'Start-BackgroundRead' -and $node.Extent.Text -match "'Get-SccmCheck'" }, $true))
+            $reads = @($ast.FindAll({ param($node) $node -is [System.Management.Automation.Language.CommandAst] -and $node.GetCommandName() -eq 'Start-BackgroundRead' -and $node.Extent.Text -match 'Get-SccmReadVariable' }, $true))
             $reads.Count | Should -Be 1 -Because $file
-            $reads[0].Extent.Text | Should -Match "'Get-ErrorKind'"
+            $reads[0].Extent.Text | Should -Match '-Functions \(Get-SccmReadFunction\)'
+            $reads[0].Extent.Text | Should -Match '-Timeout \(Get-SccmReadTimeout\)'
         }
     }
 }

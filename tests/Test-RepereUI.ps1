@@ -6980,7 +6980,7 @@ function Test-NextNameSccm {
         $name = Wait-NextName $dialog 'ORD-15'
         if ($name -ne 'ORD-15') { $problems.Add("next name '$name', expected ORD-15 past SCCM's ORD-13 and ORD-14") }
         $result = Get-DialogPartName $dialog 'next_sccm_result'
-        if ($result -ne 'Pas dans SCCM.') { $problems.Add("SCCM: '$result'") }
+        if ($result -ne 'Introuvable dans SCCM (avec vos accès).') { $problems.Add("SCCM: '$result'") }
         $count = Get-DialogPartName $dialog 'next_count_text'
         if ($count -ne '99 noms possibles, 14 déjà pris : 12 dans l''AD, 2 seulement dans SCCM') { $problems.Add("with SCCM, the count says '$count'") }
         Set-DialogText $dialog 'next_format' 'VIEUX-01'
@@ -7052,8 +7052,9 @@ function Test-SettingsSaving {
         if ((Get-DialogValue $settingsWindow 'settings_sccm_site') -ne 'DEM') { $problems.Add('the saved site isn''t shown') }
         $test = { Get-DialogPartName $settingsWindow 'settings_sccm_test_status' }
         Invoke-Element (Get-DialogPart $settingsWindow 'settings_sccm_test')
-        for ($i = 0; $i -lt 32 -and (& $test) -ne 'Le site DEM répond.'; $i++) { Start-Sleep -Milliseconds 250 }
-        if ((& $test) -ne 'Le site DEM répond.') { $problems.Add("Tester says '$(& $test)'") }
+        $expected = 'Le site DEM répond. L''inventaire de cet ordinateur est lisible.'
+        for ($i = 0; $i -lt 32 -and (& $test) -ne $expected; $i++) { Start-Sleep -Milliseconds 250 }
+        if ((& $test) -ne $expected) { $problems.Add("Tester says '$(& $test)'") }
         # Typed, not left: Tester saves it before asking.
         Set-DialogText $settingsWindow 'settings_sccm_site' 'ZZZ'
         Invoke-Element (Get-DialogPart $settingsWindow 'settings_sccm_test')

@@ -133,6 +133,8 @@ Initialize-Theme
 . "$PSScriptRoot\Changelog.ps1"
 # The Propriétés windows' and dialogs' reads, on the search runspaces.
 . "$PSScriptRoot\Background.ps1"
+# What asks SCCM (Prochain nom…, Paramètres › SCCM).
+. "$PSScriptRoot\Sccm.ps1"
 # The results grids' column filters (each page's).
 . "$PSScriptRoot\ColumnFilter.ps1"
 # Selecting a cell's text in the results grids.
