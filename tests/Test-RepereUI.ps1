@@ -6982,7 +6982,8 @@ function Test-NextNameSccm {
         $result = Get-DialogPartName $dialog 'next_sccm_result'
         if ($result -ne 'Introuvable dans SCCM (avec vos accès).') { $problems.Add("SCCM: '$result'") }
         $count = Get-DialogPartName $dialog 'next_count_text'
-        if ($count -ne '99 noms possibles, 14 déjà pris : 12 dans l''AD, 2 seulement dans SCCM') { $problems.Add("with SCCM, the count says '$count'") }
+        # AD's only: SCCM was asked about the names to give, not the whole series.
+        if ($count -ne '99 noms possibles, 12 déjà pris') { $problems.Add("with SCCM, the count says '$count'") }
         Set-DialogText $dialog 'next_format' 'VIEUX-01'
         $null = Wait-NextName $dialog 'VIEUX-02'
         Invoke-Element (Get-DialogPart $dialog 'next_block_2')

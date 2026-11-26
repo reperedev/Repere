@@ -110,10 +110,10 @@ Repère shows the name in blocks: click a block to fix it or make it vary. To wr
 Good to know:
 
 - a disabled computer counts as taken;
-- **Search** (or Enter) reads AD again, for a computer added since;
+- **Search** (or Enter) reads AD and asks SCCM again, for a computer added since;
 - the name is **not reserved**: someone else can take it in the meantime.
 
-With SCCM, each name is **In SCCM**, **Not found in SCCM (with your access)**, or Repère **couldn't check SCCM**, with the reason. SCCM may show your account only some of the computers: a name it hides looks not found. It needs the site in **Settings › SCCM**, the Configuration Manager console on this computer, and read access to SCCM.
+With SCCM, Repère asks only about the names it's about to offer: a name SCCM has is skipped, without changing where the series goes on from. If AD ends at `ORD-0100` and SCCM has `ORD-0101` and `ORD-0150`, the next name is `ORD-0102`. Each name is **In SCCM**, **Not found in SCCM (with your access)**, or Repère **couldn't check SCCM**, with the reason. SCCM may show your account only some of the computers: a name it hides looks not found. It needs the site in **Settings › SCCM**, the Configuration Manager console on this computer, and read access to SCCM.
 
 ## Users
 

@@ -21,6 +21,8 @@ $script:NextNameRecentLimit = 8
 $script:NextNameCountLimit = 50
 # Up to this many domains are ticked in the window; past it, in a list of their own.
 $script:NextNameDomainsInPlace = 3
+# How many times in a row SCCM may be asked for the next names, all the last ones it had, before Prochain nom… stops.
+$script:NextNameSccmRounds = 10
 $script:NameLengthLimit = 15
 # The window's height at the usual text size: a format's series, blocks, three names and SCCM's line, without scrolling.
 $script:NextNameHeight = 680
@@ -172,12 +174,13 @@ function Get-NameSeriesRandom($Series, [System.Random]$Random) {
 
 function Get-NextName {
     # The free names of a series, $Count at most: Names, and Taken, how many of $TakenName are in the series (a name in
-    # both AD and SCCM once). In order, after the highest taken or, with -FillGaps, the lowest free; from $From, a name
-    # of the series, when given. With $Random, at random among the free ones. Without varying block, the only name, if
-    # it's free.
+    # two domains once). In order, after the highest taken or, with -FillGaps, the lowest free; from $From, a name of the
+    # series, when given. With $Random, at random among the free ones. Without varying block, the only name, if it's
+    # free. $Skip: names taken elsewhere (SCCM's), never given, but which don't move where the series goes on from.
     param(
         [Parameter(Mandatory)] $Series,
         [string[]]$TakenName = @(),
+        [string[]]$Skip = @(),
         [int]$Count = 1,
         [switch]$FillGaps,
         [string]$From,
@@ -191,6 +194,8 @@ function Get-NextName {
         $used = Get-NameSeriesNumber $Series $name
         if ($taken.Add($used) -and (Test-NameSeriesNumber $Series $used)) { $takenNames++ }
     }
+    $skipped = [System.Collections.Generic.HashSet[bigint]]::new()
+    foreach ($name in $Skip) { if ($Series.Regex.IsMatch($name)) { $null = $skipped.Add((Get-NameSeriesNumber $Series $name)) } }
     $names = [System.Collections.Generic.List[string]]::new()
     # Full: nothing to look for, and drawing would never end.
     if ($Series.Count -le $takenNames) { }
@@ -198,25 +203,27 @@ function Get-NextName {
     elseif ($Random) {
         # Count, not Space: the all-zero numbers are drawn too, and never kept.
         if ($Series.Count -le 2 * $takenNames + 1024) {
-            # Small, or mostly taken: drawing could take long. The free ones, in a random order.
-            $free = @(for ($number = [bigint]0; $number -lt $Series.Space; $number += 1) {
-                    if ((Test-NameSeriesNumber $Series $number) -and -not $taken.Contains($number)) { $number }
-                })
-            for ($i = $free.Count - 1; $i -gt 0; $i--) {
+            # Small, or mostly taken: drawing could take long. All the names in a random order, then the free ones: the
+            # same order whatever is skipped, so that a name SCCM has only gives way to the next one.
+            $all = @(for ($number = [bigint]0; $number -lt $Series.Space; $number += 1) { if (Test-NameSeriesNumber $Series $number) { $number } })
+            for ($i = $all.Count - 1; $i -gt 0; $i--) {
                 $j = $Random.Next($i + 1)
-                $free[$i], $free[$j] = $free[$j], $free[$i]
+                $all[$i], $all[$j] = $all[$j], $all[$i]
             }
-            foreach ($number in $free | Select-Object -First $Count) { $names.Add((Get-NameSeriesName $Series $number)) }
+            foreach ($number in $all) {
+                if ($names.Count -ge $Count) { break }
+                if (-not $taken.Contains($number) -and -not $skipped.Contains($number)) { $names.Add((Get-NameSeriesName $Series $number)) }
+            }
         }
         else {
             # More than half the names are free, and names are half the numbers at least: a quarter of the draws or more
             # hit. Still, never more draws than this, on the UI thread; out of luck, the rest are the lowest free ones.
             for ($draw = 0; $names.Count -lt $Count -and $draw -lt 50 * $Count; $draw++) {
                 $number = Get-NameSeriesRandom $Series $Random
-                if ((Test-NameSeriesNumber $Series $number) -and $taken.Add($number)) { $names.Add((Get-NameSeriesName $Series $number)) }
+                if ((Test-NameSeriesNumber $Series $number) -and -not $skipped.Contains($number) -and $taken.Add($number)) { $names.Add((Get-NameSeriesName $Series $number)) }
             }
             for ($number = Get-NameSeriesValid $Series ([bigint]0); $names.Count -lt $Count -and $number -lt $Series.Space; $number = Get-NameSeriesValid $Series ($number + 1)) {
-                if ($taken.Add($number)) { $names.Add((Get-NameSeriesName $Series $number)) }
+                if (-not $skipped.Contains($number) -and $taken.Add($number)) { $names.Add((Get-NameSeriesName $Series $number)) }
             }
             # What was drawn isn't what AD has: Taken says the series' names.
             return @{ Names = $names.ToArray(); Taken = $taken.Count - $names.Count }
@@ -231,7 +238,7 @@ function Get-NextName {
             }
         }
         while ($names.Count -lt $Count -and $number -lt $Series.Space) {
-            if (-not $taken.Contains($number)) { $names.Add((Get-NameSeriesName $Series $number)) }
+            if (-not $taken.Contains($number) -and -not $skipped.Contains($number)) { $names.Add((Get-NameSeriesName $Series $number)) }
             $number = Get-NameSeriesValid $Series ($number + 1)
         }
     }
@@ -306,11 +313,10 @@ function Get-FailedDomainText($Failed) {
         }) -join (Tr ' ; ')
 }
 
-function Get-NextNameRead([string]$Start, [string[]]$Domains, $Sccm) {
+function Get-NextNameRead([string]$Start, [string[]]$Domains) {
     # On a search runspace: the names that start with $Start in each domain, in the same list since a name is taken in
-    # any of them, the domains that didn't answer (Failed), and SCCM's answer when $Sccm is given.
-    # SCCM gets what's left of the read's time once the domains have answered (Get-SccmReadTimeout).
-    $until = [datetime]::UtcNow.AddSeconds($script:ReadTimeout + $script:SccmTotalSeconds)
+    # any of them, and the domains that didn't answer (Failed). SCCM is asked apart, for the names given only
+    # (Start-NextNameSccmCheck).
     $names = [System.Collections.Generic.List[string]]::new()
     $failed = [System.Collections.Generic.List[hashtable]]::new()
     foreach ($domain in $Domains) {
@@ -319,7 +325,7 @@ function Get-NextNameRead([string]$Start, [string[]]$Domains, $Sccm) {
         }
         catch { $failed.Add(@{ Domain = $domain; Reason = ConvertTo-FrenchError $_.Exception.Message }) }
     }
-    @{ Names = $names.ToArray(); Failed = $failed.ToArray(); Sccm = $(if ($Sccm) { Get-SccmCheck $Sccm $Start $until }) }
+    @{ Names = $names.ToArray(); Failed = $failed.ToArray() }
 }
 
 $script:NextNameXaml = @'
@@ -610,12 +616,13 @@ function Update-NextNameRead {
     $state = $script:NextNameDialog
     if ($state.Updating) { return }
     $state.Timer.Stop()
+    # A draw of its own, kept while SCCM is asked about it.
+    $state.Seed = $state.Random.Next()
     $exclude = $state.Root.FindName('next_exclude').Text
-    $sccm = if ($state.Root.FindName('next_sccm_check').IsChecked) { $state.Sccm }
     $domains = @(Get-NextNameDomain)
     $typed = $state.Root.FindName('next_format').Text.Trim()
     $start = Get-NameFormatStart $state.Blocks
-    $state.Wanted = @{ Start = $start; Domains = $domains; Sccm = $sccm; Key = "$($domains -join ',')|$([bool]$sccm)" }
+    $state.Wanted = @{ Start = $start; Domains = $domains; Key = $domains -join ',' }
     $read = $state.Read
     $covered = $read -and $read.Key -eq $state.Wanted.Key -and $start.StartsWith($read.Start, [System.StringComparison]::Ordinal)
     if ($typed.Length -lt 2 -or -not $domains.Count -or (Get-NameFormatProblem $state.Blocks $exclude) -or $covered) {
@@ -636,35 +643,74 @@ function Stop-NextNameRead($State) {
 }
 
 function Start-NextNameRead {
-    # The read Update-NextNameRead asked for. A later change makes its answer useless: ReadId says so. Its time limit is
-    # the reads' and SCCM's own (Get-SccmReadTimeout), which it may wait for after the domains.
+    # The read Update-NextNameRead asked for. A later change makes its answer useless: ReadId says so.
     $state = $script:NextNameDialog
     $state.Timer.Stop()
     if (-not $state -or $state.Closed) { return }
     $wanted = $state.Wanted
     Stop-NextNameRead $state
-    Start-BackgroundRead -Command 'Get-NextNameRead' -Arguments @($wanted.Start, $wanted.Domains, $wanted.Sccm) `
-        -Functions (Get-SccmReadFunction) -Variables (Get-SccmReadVariable) -Timeout (Get-SccmReadTimeout) `
+    Start-BackgroundRead -Command 'Get-NextNameRead' -Arguments @($wanted.Start, $wanted.Domains) `
         -Context @{ State = $state; Id = $state.ReadId; Wanted = $wanted } -OnDone {
         param($context, $read, $problem)
         $state = $context.State
-        # Its SCCM check may have run out of time, or been stopped with it.
-        Start-SccmStopSweep
         if ($state.Closed -or $context.Id -ne $state.ReadId) { return }
         if ($problem -or -not $read) {
             $state.Read = $null
             Show-NextNameResult -Problem $(if ($problem) { ConvertTo-FrenchError $problem } else { Tr 'AD n''a rien renvoyé' })
             return
         }
-        $state.Read = @{ Key = $context.Wanted.Key; Start = $context.Wanted.Start; Names = @($read.Names); Failed = @($read.Failed); Sccm = $read.Sccm }
+        $state.Read = @{ Key = $context.Wanted.Key; Start = $context.Wanted.Start; Names = @($read.Names); Failed = @($read.Failed) }
+        Show-NextNameResult
+    }
+}
+
+function Reset-NextNameSccm($State) {
+    # What SCCM said of names, forgotten (Rechercher, or its box ticked again), and its check under way let go of:
+    # Taken, the names SCCM has, Free, those it doesn't (with the account's access), Reason when it couldn't be asked,
+    # Rounds, how many times in a row it was asked for the names given.
+    if ($State.SccmCheck) { Stop-BackgroundRead $State.SccmCheck }
+    $State.SccmCheck = $null
+    $State.SccmNames = @{
+        Taken = [System.Collections.Generic.HashSet[string]]::new([System.StringComparer]::OrdinalIgnoreCase)
+        Free = [System.Collections.Generic.HashSet[string]]::new([System.StringComparer]::OrdinalIgnoreCase)
+        Reason = ''; Rounds = 0
+    }
+}
+
+function Start-NextNameSccmCheck($State, [string[]]$Name) {
+    # Asks SCCM which of these names it has, by their names, so that no answer comes near its limit of rows. What it says
+    # is kept until Rechercher (SccmNames), whatever changes meanwhile: a name SCCM has stays one. One check at a time,
+    # which a change doesn't stop; once it's answered, the names shown are worked out again, and the next is asked if
+    # they still need it.
+    if ($State.SccmCheck -or -not $Name.Count) { return }
+    $context = @{ Dialog = $State; Known = $State.SccmNames; Name = $Name }
+    $State.SccmCheck = $context
+    Start-BackgroundRead -Command 'Get-SccmName' -Arguments @($State.Sccm, $Name) `
+        -Functions (Get-SccmReadFunction) -Variables (Get-SccmReadVariable) -Timeout (Get-SccmReadTimeout) -Context $context -OnDone {
+        param($context, $read, $problem)
+        # It may have run out of time, or been stopped.
+        Start-SccmStopSweep
+        $state = $context.Dialog
+        if ([object]::ReferenceEquals($state.SccmCheck, $context)) { $state.SccmCheck = $null }
+        if ($state.Closed -or -not [object]::ReferenceEquals($state.SccmNames, $context.Known)) { return }
+        $known = $context.Known
+        if ($problem -or -not $read) { $known.Reason = if ($problem) { ConvertTo-FrenchError $problem } else { Tr 'sa réponse n''est pas lisible' } }
+        elseif (-not $read.Checked) { $known.Reason = $read.Reason }
+        else {
+            $have = @($read.Names)
+            foreach ($name in $context.Name) { if ($name -in $have) { $null = $known.Taken.Add($name) } else { $null = $known.Free.Add($name) } }
+            $known.Rounds++
+        }
         Show-NextNameResult
     }
 }
 
 function Start-NextNameSearch {
-    # Rechercher: a new read now, even when the last one covers this format, for a computer added since.
+    # Rechercher: a new read now, even when the last one covers this format, for a computer added since, and SCCM asked
+    # again.
     $state = $script:NextNameDialog
     $state.Read = $null
+    Reset-NextNameSccm $state
     Update-NextNameRead
     if ($state.Timer.IsEnabled) { Start-NextNameRead }
 }
@@ -713,39 +759,54 @@ function Show-NextNameResult {
     }
     else {
         $series = New-NameSeries $state.Blocks $exclude
-        $sccm = $read.Sccm
-        $taken = @($read.Names)
-        if ($sccm -and $sccm.Checked) { $taken += @($sccm.Names) }
+        # SCCM is asked only about the names to give (Start-NextNameSccmCheck): one it has is skipped, without moving
+        # where the series goes on from, and what it hasn't said yet holds the names back.
+        $sccm = if ($root.FindName('next_sccm_check').IsChecked) { $state.Sccm }
+        $known = $state.SccmNames
         $from = $root.FindName('next_from').Text.Trim()
         if ($from -and -not $random -and $varies -and -not $series.Regex.IsMatch($from)) { $Problem = Tr 'Commencer à : ce nom ne suit pas le modèle.' }
         else {
-            $options = @{ Series = $series; TakenName = $taken; Count = Get-NextNameCount }
-            if ($random) { $options.Random = $state.Random }
+            $count = Get-NextNameCount
+            # With SCCM, the next ones too, asked with them: should it have some, one answer is most often enough.
+            $options = @{ Series = $series; TakenName = @($read.Names); Count = $(if ($sccm) { [math]::Max($count, $script:SccmBatchSize) } else { $count }) }
+            if ($sccm) { $options.Skip = @($known.Taken) }
+            # The same draw from one answer of SCCM to the next: only the names it has give way.
+            if ($random) { $options.Random = [System.Random]::new($state.Seed) }
             elseif ($varies) {
                 $options.FillGaps = $root.FindName('next_gaps').SelectedIndex -eq 1
                 if ($from) { $options.From = $from }
             }
             $found = Get-NextName @options
-            $names = @($found.Names)
-            if ($varies) {
-                if ($names.Count) {
-                    $root.FindName('next_name').Text = $names[0]
-                    & $set 'next_more' ($names | Select-Object -Skip 1 | Join-String -Separator ', ')
-                }
-                else { $Problem = Tr 'Cette série est pleine.' }
-                # With SCCM, where they're taken: a name in both counts as AD's, as on the series' chip.
-                $inAd = [System.Collections.Generic.HashSet[string]]::new([System.StringComparer]::OrdinalIgnoreCase)
-                foreach ($adName in $read.Names) { if ($series.Regex.IsMatch($adName)) { $null = $inAd.Add($adName) } }
-                $onlySccm = $found.Taken - $inAd.Count
-                $countText = if ($onlySccm -gt 0) { Tr '{0:N0} noms possibles, {1:N0} déjà pris : {2:N0} dans l''AD, {3:N0} seulement dans SCCM' } else { Tr '{0:N0} noms possibles, {1:N0} déjà pris' }
-                & $set 'next_count_text' ([string]::Format((Get-TextCulture), $countText, $series.Count, $found.Taken, $inAd.Count, $onlySccm))
+            $names = @($found.Names | Select-Object -First $count)
+            $shown = if ($varies) { $names } else { @($series.Template) }
+            $unknown = @($(if ($varies) { $found.Names } else { $shown }) | Where-Object { -not $known.Taken.Contains($_) -and -not $known.Free.Contains($_) })
+            $asking = $sccm -and -not $known.Reason -and @($shown | Where-Object { $_ -in $unknown }).Count -gt 0
+            if ($asking -and $known.Rounds -ge $script:NextNameSccmRounds) {
+                $known.Reason = Tr 'trop de noms de suite sont déjà dans SCCM'
+                $asking = $false
+            }
+            if ($asking) {
+                $root.FindName('next_name').Text = Tr 'Lecture…'
+                Start-NextNameSccmCheck $state $unknown
+                $names = @()
             }
             else {
-                $root.FindName('next_name').Text = $series.Template
-                $inAd = @($read.Names | Where-Object { $series.Regex.IsMatch($_) }).Count -gt 0
-                & $set 'next_count_text' $(if ($inAd) { Tr 'Déjà pris dans l''AD.' } else { Tr 'Libre dans l''AD.' })
+                $known.Rounds = 0
+                if ($varies) {
+                    if ($names.Count) {
+                        $root.FindName('next_name').Text = $names[0]
+                        & $set 'next_more' ($names | Select-Object -Skip 1 | Join-String -Separator ', ')
+                    }
+                    else { $Problem = Tr 'Cette série est pleine.' }
+                    & $set 'next_count_text' ([string]::Format((Get-TextCulture), (Tr '{0:N0} noms possibles, {1:N0} déjà pris'), $series.Count, $found.Taken))
+                }
+                else {
+                    $root.FindName('next_name').Text = $series.Template
+                    $inAd = @($read.Names | Where-Object { $series.Regex.IsMatch($_) }).Count -gt 0
+                    & $set 'next_count_text' $(if ($inAd) { Tr 'Déjà pris dans l''AD.' } else { Tr 'Libre dans l''AD.' })
+                }
+                Show-NextNameSccm $sccm $known $series $shown $varies
             }
-            Show-NextNameSccm $sccm $series $(if ($varies) { $names } else { @($series.Template) }) $varies
         }
         if ($read.Failed.Count) { & $set 'next_domain_note' ((Tr 'Non vérifié dans : {0}') -f (Get-FailedDomainText $read.Failed)) }
     }
@@ -755,21 +816,19 @@ function Show-NextNameResult {
     $root.FindName('next_copy').IsEnabled = $names.Count -gt 0
 }
 
-function Show-NextNameSccm($Check, $Series, [string[]]$Name, [bool]$Varies) {
-    # What SCCM said, in its three cases, which never read alike: in SCCM, not found there (with
-    # the account's access: SCCM doesn't say what it hides), and couldn't be asked.
-    if (-not $Check) { return }
+function Show-NextNameSccm($Sccm, $Known, $Series, [string[]]$Name, [bool]$Varies) {
+    # What SCCM said of the names given, in its three cases, which never read alike: in SCCM, not found there (with the
+    # account's access: SCCM doesn't say what it hides), and couldn't be asked. The names it has were skipped.
+    if (-not $Sccm) { return }
     $block = $script:NextNameDialog.Root.FindName('next_sccm_result')
     $block.Visibility = 'Visible'
-    if (-not $Check.Checked) {
+    if ($Known.Reason) {
         $block.SetResourceReference([System.Windows.Documents.TextElement]::ForegroundProperty, 'R.WarnText')
-        $block.Text = (Tr 'Vérification SCCM impossible : {0}. Non vérifié dans SCCM.') -f $Check.Reason
+        $block.Text = (Tr 'Vérification SCCM impossible : {0}. Non vérifié dans SCCM.') -f $Known.Reason
         return
     }
     $block.SetResourceReference([System.Windows.Documents.TextElement]::ForegroundProperty, 'R.Muted')
-    $found = @($Check.Names | Where-Object { $Series.Regex.IsMatch($_) })
-    if (-not $Varies) { $block.Text = if ($found.Count) { Tr 'Dans SCCM.' } else { Tr 'Introuvable dans SCCM (avec vos accès).' } }
-    # The names SCCM has in the series are counted on the line above (« seulement dans SCCM »), never twice here.
+    if (-not $Varies) { $block.Text = if ($Known.Taken.Contains($Series.Template)) { Tr 'Dans SCCM.' } else { Tr 'Introuvable dans SCCM (avec vos accès).' } }
     elseif (-not $Name.Count) { $block.Text = '' }
     else { $block.Text = Tr 'Introuvable dans SCCM (avec vos accès).' }
     $block.Visibility = ConvertTo-Visibility ([bool]$block.Text)
@@ -869,10 +928,11 @@ function Show-NextNameDialog($Owner, $Icon, $Blocks, [string]$PageDomain, [strin
     $timer.Add_Tick({ Start-NextNameRead })
     $script:NextNameDialog = @{
         Root = $root; Dialog = $dialog; Blocks = @(); Names = @(); Read = $null; Wanted = $null; ReadId = 0; Timer = $timer; Closed = $false
-        Updating = $true; Random = [System.Random]::new(); Recent = @($setting.Recent); Sccm = (Read-SccmSetting); SavedSccm = $setting.Sccm
-        DomainBoxes = @(); OpenSettings = $false; DomainsClosedAt = [datetime]::MinValue
+        Updating = $true; Random = [System.Random]::new(); Seed = 0; Recent = @($setting.Recent); Sccm = (Read-SccmSetting); SavedSccm = $setting.Sccm
+        DomainBoxes = @(); OpenSettings = $false; DomainsClosedAt = [datetime]::MinValue; SccmNames = $null; SccmCheck = $null
     }
     $state = $script:NextNameDialog
+    Reset-NextNameSccm $state
 
     # A few domains are ticked in place; more would fill the window: they go in the button's popup.
     $domainCount = @($script:domainList).Count
@@ -953,7 +1013,8 @@ function Show-NextNameDialog($Owner, $Icon, $Blocks, [string]$PageDomain, [strin
         $script:NextNameDialog.OpenSettings = $true
         $script:NextNameDialog.Dialog.Close()
     })
-    $check.Add_Checked({ Update-NextNameRead })
+    # Ticked again: asked again, should it have failed.
+    $check.Add_Checked({ Reset-NextNameSccm $script:NextNameDialog; Update-NextNameRead })
     $check.Add_Unchecked({ Update-NextNameRead })
     $root.FindName('next_order').SelectedIndex = [int]$setting.Random
     $root.FindName('next_gaps').SelectedIndex = [int]$setting.FillGaps
@@ -1010,6 +1071,7 @@ function Show-NextNameDialog($Owner, $Icon, $Blocks, [string]$PageDomain, [strin
         $state.Closed = $true
         $timer.Stop()
         Stop-BackgroundRead $state
+        if ($state.SccmCheck) { Stop-BackgroundRead $state.SccmCheck }
         Save-NextNameSetting
         $script:NextNameDialog = $null
     }

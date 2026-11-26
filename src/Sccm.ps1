@@ -9,6 +9,9 @@
 # an account only some devices, and then answers with fewer rows, not with an error: what's found is certain, and what
 # isn't is only « introuvable (avec vos accès) ».
 #
+# Only WQL (Invoke-CMWmiQuery): the console's other cmdlets stop at its limit of results, 1000 by default, with only a
+# warning, which WQL doesn't (checked on a real site, 2026-11-26).
+#
 # Everything that asks SCCM runs on a search runspace (Start-BackgroundRead), given Get-SccmReadFunction and
 # Get-SccmReadVariable. Dot-sourced by the main script, after Background.ps1.
 
@@ -109,8 +112,8 @@ $script:SccmLinkScript = {
 
 function Get-SccmReadFunction {
     # The functions a read needs on a search runspace to ask SCCM, as Start-BackgroundRead's -Functions.
-    'Invoke-SccmRead', 'New-SccmRunspace', 'Close-SccmRunspace', 'Get-SccmFailureReason', 'Test-SccmRefusal', 'Get-SccmDeadline', 'Get-SccmDomain', 'Test-SccmText', 'Get-ErrorKind', 'ConvertTo-SccmText', 'Get-SccmCheck', 'Find-SccmDevice', 'Select-SccmDevice',
-    'Get-SccmInventory', 'Get-SccmSummary', 'Get-SccmTest', 'Test-SccmServer'
+    'Invoke-SccmRead', 'New-SccmRunspace', 'Close-SccmRunspace', 'Get-SccmFailureReason', 'Test-SccmRefusal', 'Get-SccmDeadline', 'Get-SccmDomain', 'Test-SccmText', 'Get-ErrorKind', 'ConvertTo-SccmText', 'Get-SccmName', 'Find-SccmDevice', 'Select-SccmDevice',
+    'Read-SccmBatch', 'Get-SccmInventory', 'Get-SccmSummary', 'Get-SccmTest', 'Test-SccmServer'
 }
 
 function Get-SccmReadVariable {
@@ -383,15 +386,39 @@ function Test-SccmText([string]$Text, [switch]$Serial) {
     if ($Serial) { $Text -match '^[\p{L}\p{N} _./:#+-]{1,64}$' } else { $Text -match '^[\p{L}\p{N}_.-]{1,64}$' }
 }
 
-function Get-SccmCheck($Sccm, [string]$Start, [datetime]$Until = (Get-SccmDeadline)) {
-    # The names SCCM has that start with $Start: Checked is $true with its Names, or $false with the Reason why it
-    # couldn't be asked. Never an empty list for a check that failed. The wildcard is Get-CMDevice's: what it returns can
-    # be wider than the series, which the series' Regex narrows down.
-    $read = Invoke-SccmRead $Sccm -Seconds $script:SccmTimeoutSeconds -Until $Until -With @{ Name = "$Start*" } -Read @'
-param([string]$Name)
-Get-CMDevice -Name $Name -Resource -WarningAction SilentlyContinue | ForEach-Object { [string]$_.Name }
+function Get-SccmName($Sccm, [string[]]$Name, [datetime]$Until = (Get-SccmDeadline)) {
+    # Which of these names SCCM has a record of, whatever its state (Prochain nom…): Checked is $true with those Names, as
+    # given, or $false with the Reason why they couldn't be asked. Never an empty list for a check that failed. By their
+    # exact names, a few at a time: the series' own is never read whole.
+    $find = Find-SccmDevice $Sccm -Name $Name -Until $Until
+    $check = @{ Checked = $find.Checked; Reason = $find.Reason; Names = @() }
+    if ($find.Checked -and @($find.Skipped).Count) { $check.Checked = $false; $check.Reason = Tr 'Repère ne cherche pas dans SCCM un nom avec ces caractères' }
+    if (-not $check.Checked) { return $check }
+    $have = [System.Collections.Generic.HashSet[string]]::new([System.StringComparer]::OrdinalIgnoreCase)
+    foreach ($device in $find.Devices) { $null = $have.Add([string]$device.Name) }
+    $check.Names = @($Name | Where-Object { $have.Contains($_) })
+    $check
+}
+
+function Read-SccmBatch {
+    # The rows of $Class whose $Field is one of $Value (texts already in quotes, or numbers), SccmBatchSize values at a
+    # time: Checked with its Rows and the Server that answered, or the Reason why not. A part that fails fails the whole,
+    # as what wasn't read would look missing.
+    param($Sccm, [object[]]$Value, [string]$Field, [string]$Class, [string[]]$Column, [datetime]$Until = (Get-SccmDeadline), [switch]$Automatic)
+    $result = @{ Checked = $true; Reason = ''; Rows = @(); Server = '' }
+    $rows = [System.Collections.Generic.List[object]]::new()
+    for ($i = 0; $i -lt $Value.Count; $i += $script:SccmBatchSize) {
+        $part = @($Value | Select-Object -Skip $i -First $script:SccmBatchSize)
+        $read = Invoke-SccmRead $Sccm -Until $Until -Automatic:$Automatic -With @{ Class = $Class; Where = "$Field IN ($($part -join ','))"; Column = $Column } -Read @'
+param([string]$Class, [string]$Where, [string[]]$Column)
+Read-SccmRow $Class $Column $Where
 '@
-    @{ Checked = $read.Checked; Names = @($read.Output | ForEach-Object { [string]$_ }); Reason = $read.Reason }
+        if (-not $read.Checked) { $result.Checked = $false; $result.Reason = $read.Reason; return $result }
+        $result.Server = $read.Server
+        foreach ($row in $read.Output) { $rows.Add($row) }
+    }
+    $result.Rows = $rows.ToArray()
+    $result
 }
 
 function Find-SccmDevice {
@@ -400,10 +427,6 @@ function Find-SccmDevice {
     # account can see: Select-SccmDevice says which. Skipped: the names not asked for (Test-SccmText).
     param($Sccm, [string[]]$Name = @(), [string]$Serial, [datetime]$Until = (Get-SccmDeadline), [switch]$Automatic)
     $result = @{ Checked = $true; Reason = ''; Devices = @(); Server = ''; Skipped = @($Name | Where-Object { $_ -and -not (Test-SccmText $_) }) }
-    $query = @'
-param([string]$Where, [string[]]$Column)
-Read-SccmRow 'SMS_R_System' $Column $Where
-'@
     $wanted = @($Name | Where-Object { $_ -and (Test-SccmText $_) } | Select-Object -Unique | ForEach-Object { "'$(ConvertTo-SccmText $_)'" })
     $field = 'Name'
     if ($Serial -and -not (Test-SccmText $Serial -Serial)) {
@@ -422,20 +445,13 @@ Read-SccmRow 'SMS_G_System_PC_BIOS' @('ResourceID') $Where
         $field = 'ResourceID'
         $wanted = @($read.Output | ForEach-Object { [int64]$_.ResourceID } | Select-Object -Unique)
     }
-    $devices = [System.Collections.Generic.List[object]]::new()
-    for ($i = 0; $i -lt $wanted.Count; $i += $script:SccmBatchSize) {
-        $batch = @($wanted | Select-Object -Skip $i -First $script:SccmBatchSize)
-        $read = Invoke-SccmRead $Sccm -Until $Until -Automatic:$Automatic -With @{ Where = "$field IN ($($batch -join ','))"; Column = $script:SccmDeviceColumns } -Read $query
-        # A part not read would make the others look missing: all or nothing.
-        if (-not $read.Checked) { $result.Checked = $false; $result.Reason = $read.Reason; return $result }
-        $result.Server = $read.Server
-        foreach ($device in $read.Output) {
-            # A record without its name would look like no record.
-            if (-not $device.ResourceID -or -not $device.Name) { $result.Checked = $false; $result.Reason = Tr 'sa réponse n''est pas lisible'; return $result }
-            $devices.Add($device)
-        }
-    }
-    $result.Devices = $devices.ToArray()
+    if (-not $wanted.Count) { return $result }
+    $read = Read-SccmBatch $Sccm $wanted $field 'SMS_R_System' $script:SccmDeviceColumns -Until $Until -Automatic:$Automatic
+    if (-not $read.Checked) { $result.Checked = $false; $result.Reason = $read.Reason; return $result }
+    $result.Server = $read.Server
+    # A record without its name would look like no record.
+    if (@($read.Rows | Where-Object { -not $_.ResourceID -or -not $_.Name }).Count) { $result.Checked = $false; $result.Reason = Tr 'sa réponse n''est pas lisible'; return $result }
+    $result.Devices = @($read.Rows)
     $result
 }
 
@@ -508,17 +524,10 @@ function Get-SccmSummary {
     # ResourceID only: whether this class keeps to what the account may see isn't sure, but Find-SccmDevice's does.
     param($Sccm, [int64[]]$ResourceId, [datetime]$Until = (Get-SccmDeadline), [switch]$Automatic)
     $result = @{ Checked = $true; Reason = ''; Devices = @() }
-    $devices = [System.Collections.Generic.List[object]]::new()
-    for ($i = 0; $i -lt $ResourceId.Count; $i += $script:SccmBatchSize) {
-        $batch = @($ResourceId | Select-Object -Skip $i -First $script:SccmBatchSize)
-        $read = Invoke-SccmRead $Sccm -Until $Until -Automatic:$Automatic -With @{ Where = "ResourceID IN ($($batch -join ','))"; Column = $script:SccmSummaryColumns } -Read @'
-param([string]$Where, [string[]]$Column)
-Read-SccmRow 'SMS_CombinedDeviceResources' $Column $Where
-'@
-        if (-not $read.Checked) { $result.Checked = $false; $result.Reason = $read.Reason; return $result }
-        foreach ($device in $read.Output) { $devices.Add($device) }
-    }
-    $result.Devices = $devices.ToArray()
+    if (-not $ResourceId.Count) { return $result }
+    $read = Read-SccmBatch $Sccm @($ResourceId | Select-Object -Unique) 'ResourceID' 'SMS_CombinedDeviceResources' $script:SccmSummaryColumns -Until $Until -Automatic:$Automatic
+    if (-not $read.Checked) { $result.Checked = $false; $result.Reason = $read.Reason; return $result }
+    $result.Devices = @($read.Rows)
     $result
 }
 

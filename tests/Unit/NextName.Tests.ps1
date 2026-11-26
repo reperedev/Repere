@@ -182,6 +182,34 @@ Describe 'Get-NextName' {
         (Get-NextName -Series $series -TakenName $last -Count 2).Names | Should -BeExactly 'ZZZZZZZ-9999999'
     }
 
+    Context 'Names SCCM has (Skip)' {
+        BeforeAll { $script:InAd = 1..12 | ForEach-Object { 'ORD-{0:00}' -f $_ } }
+
+        It 'Are never given, nor counted as taken' {
+            $found = Get-NextName -Series (Get-Series 'ORD-##') -TakenName $InAd -Skip 'ORD-13', 'ord-14' -Count 3
+            $found.Names | Should -BeExactly 'ORD-15', 'ORD-16', 'ORD-17'
+            $found.Taken | Should -Be 12
+        }
+
+        It 'Don''t move where the series goes on from: after AD''s highest' {
+            (Get-NextName -Series (Get-Series 'ORD-##') -TakenName $InAd -Skip 'ORD-50' -Count 1).Names | Should -BeExactly 'ORD-13'
+        }
+
+        It 'Are skipped among the gaps, and from Commencer à' {
+            $series = Get-Series 'ORD-##'
+            (Get-NextName -Series $series -TakenName 'ORD-01', 'ORD-03' -Skip 'ORD-02' -FillGaps -Count 2).Names | Should -BeExactly 'ORD-04', 'ORD-05'
+            (Get-NextName -Series $series -TakenName $InAd -Skip 'ORD-40' -From 'ORD-40' -FillGaps -Count 1).Names | Should -BeExactly 'ORD-41'
+        }
+
+        It 'At random, only give way to the next one drawn: <Format>' -ForEach @(@{ Format = 'ORD-##' }, @{ Format = 'ORD-####' }) {
+            $series = Get-Series $Format
+            $names = @((Get-NextName -Series $series -TakenName $InAd -Count 5 -Random ([System.Random]::new(7))).Names)
+            $again = @((Get-NextName -Series $series -TakenName $InAd -Skip $names[0] -Count 5 -Random ([System.Random]::new(7))).Names)
+            $again | Should -Not -Contain $names[0]
+            $again[0..3] | Should -BeExactly $names[1..4]
+        }
+    }
+
     Context 'At random' {
         It 'Gives free names, different ones, the same for the same seed' {
             $series = Get-Series 'ORD-####'
@@ -296,27 +324,33 @@ Describe 'What SCCM is asked' {
 
         AfterAll { $env:REPERE_FAKEAD_SCCM_UNREACHABLE = $null; $env:REPERE_FAKEAD_SCCM_ERROR = $null; Close-SccmRunspace $script:SccmLink }
 
-        It 'Finds the names that start with the text' {
-            $check = Get-SccmCheck $Site 'ORD-'
+        It 'Says which of the names SCCM has, as they were given, whatever their state' {
+            $check = Get-SccmName $Site 'ORD-14', 'ORD-15', 'VIEUX-01', 'ord-13'
             $check.Checked | Should -BeTrue
-            $check.Names | Should -Contain 'ORD-14'
+            $check.Names | Should -BeExactly 'ORD-14', 'VIEUX-01', 'ord-13'
         }
 
         It 'Says none when SCCM has none, not a failure' {
-            $check = Get-SccmCheck $Site 'INCONNU-'
+            $check = Get-SccmName $Site 'INCONNU-01'
             $check.Checked | Should -BeTrue
             $check.Names | Should -BeNullOrEmpty
         }
 
+        It 'A name it doesn''t ask for is a failure, not a free name' {
+            $check = Get-SccmName $Site 'ORD-15', "ORD'16"
+            $check.Checked | Should -BeFalse
+            $check.Reason | Should -BeExactly 'Repère ne cherche pas dans SCCM un nom avec ces caractères'
+        }
+
         It 'A site that doesn''t exist is a failure with its reason' {
-            $check = Get-SccmCheck @{ Site = 'ZZZ'; Server = 'sccm.demo.local' } 'ORD-'
+            $check = Get-SccmName @{ Site = 'ZZZ'; Server = 'sccm.demo.local' } 'ORD-01'
             $check.Checked | Should -BeFalse
             $check.Reason | Should -BeExactly 'le site ZZZ est introuvable sur sccm.demo.local'
         }
 
         It 'A server that doesn''t answer is a failure, never an empty list' {
             $env:REPERE_FAKEAD_SCCM_UNREACHABLE = '1'
-            $check = Get-SccmCheck $Site 'ORD-'
+            $check = Get-SccmName $Site 'ORD-01'
             $env:REPERE_FAKEAD_SCCM_UNREACHABLE = $null
             $check.Checked | Should -BeFalse
             $check.Reason | Should -BeExactly 'sccm.demo.local ne répond pas'
@@ -324,7 +358,7 @@ Describe 'What SCCM is asked' {
 
         It 'A console older than the site says so in one line, with the version, and stays not checked (#329)' {
             $env:REPERE_FAKEAD_SCCM_ERROR = 'A new version of the console is available (5.2603.1035.1900). Cmdlets may not function as expected or may corrupt your site''s configuration if they are a different version than your site.'
-            try { $check = Get-SccmCheck $Site 'ORD-' }
+            try { $check = Get-SccmName $Site 'ORD-01' }
             finally { $env:REPERE_FAKEAD_SCCM_ERROR = $null }
             $check.Checked | Should -BeFalse
             $check.Names | Should -BeNullOrEmpty
@@ -340,7 +374,7 @@ Describe 'What SCCM is asked' {
             foreach ($case in $cases) {
                 $env:REPERE_FAKEAD_SCCM_ERROR = $case[0]
                 Close-SccmRunspace $script:SccmLink
-                try { $check = Get-SccmCheck $Site 'ORD-' }
+                try { $check = Get-SccmName $Site 'ORD-01' }
                 finally { $env:REPERE_FAKEAD_SCCM_ERROR = $null }
                 $check.Checked | Should -BeFalse
                 $check.Reason | Should -BeExactly $case[1]
@@ -354,7 +388,7 @@ Describe 'What SCCM is asked' {
             $env:REPERE_FAKEAD_SCCM_DELAY = '30'
             try {
                 $watch = [System.Diagnostics.Stopwatch]::StartNew()
-                $check = Get-SccmCheck $Site 'ORD-'
+                $check = Get-SccmName $Site 'ORD-01'
                 $watch.Elapsed.TotalSeconds | Should -BeLessThan 10
                 $check.Checked | Should -BeFalse
                 $check.Reason | Should -BeExactly 'SCCM n''a pas répondu en 1 secondes'
@@ -379,7 +413,7 @@ Describe 'What SCCM is asked' {
             try {
                 & $sweep
                 $before = @(Get-Runspace).Count
-                foreach ($try in 1..3) { (Get-SccmCheck $Site 'ORD-').Checked | Should -BeFalse }
+                foreach ($try in 1..3) { (Get-SccmName $Site 'ORD-01').Checked | Should -BeFalse }
                 @(Get-Runspace).Count | Should -BeGreaterThan $before
                 & $sweep
                 $script:SccmStopping.Count | Should -Be 0
@@ -423,7 +457,7 @@ Describe 'What SCCM is asked' {
         It 'Without the console, says so' {
             if ($HasConsole) { Set-ItResult -Skipped -Because 'this computer has the console' }
             $env:SMS_ADMIN_UI_PATH = $null
-            $check = Get-SccmCheck $Site 'ORD-'
+            $check = Get-SccmName $Site 'ORD-01'
             $check.Checked | Should -BeFalse
             $check.Reason | Should -BeExactly 'la console Configuration Manager n''est pas installée sur cet ordinateur'
         }
@@ -435,7 +469,7 @@ Describe 'What SCCM is asked' {
             Copy-Item (Join-Path $script:RepereSource 'FakeAD\FakeSccm.psm1') (Join-Path $bin 'ConfigurationManager.psm1')
             "@{ RootModule = 'ConfigurationManager.psm1'; ModuleVersion = '1.0'; FunctionsToExport = '*' }" | Set-Content (Join-Path $bin 'ConfigurationManager.psd1')
             $env:SMS_ADMIN_UI_PATH = Join-Path $bin 'i386'
-            $check = Get-SccmCheck $Site 'VIEUX-'
+            $check = Get-SccmName $Site 'VIEUX-01'
             $check.Checked | Should -BeTrue
             $check.Names | Should -BeExactly 'VIEUX-01'
         }
@@ -557,7 +591,7 @@ function New-PSDrive { [CmdletBinding()] param([string]`$Name, [string]`$PSProvi
 Export-ModuleMember -Function Get-PSDrive, New-PSDrive
 "@
         $script:FakeSccmModule = $module
-        $check = Get-SccmCheck @{ Site = 'DEM'; Server = 'sccm.demo.local' } 'ORD-'
+        $check = Get-SccmName @{ Site = 'DEM'; Server = 'sccm.demo.local' } 'ORD-01'
         $check.Checked | Should -BeFalse
         $check.Reason | Should -BeExactly $Reason
     }

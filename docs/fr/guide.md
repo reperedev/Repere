@@ -108,10 +108,10 @@ Repère montre le nom en blocs : un clic fixe un bloc ou le fait varier. Pour é
 Bon à savoir :
 
 - un ordinateur désactivé compte comme pris ;
-- **Rechercher** (ou Entrée) relit l'AD, pour un ordinateur ajouté depuis ;
+- **Rechercher** (ou Entrée) relit l'AD et redemande à SCCM, pour un ordinateur ajouté depuis ;
 - le nom n'est **pas réservé** : quelqu'un d'autre peut le prendre entre-temps.
 
-Avec SCCM, chaque nom est **Dans SCCM**, **Introuvable dans SCCM (avec vos accès)** ou **Vérification SCCM impossible**, avec la raison. SCCM peut ne montrer qu'une partie des ordinateurs à votre compte : un nom qu'il cache paraît introuvable. Il faut le site dans **Paramètres › SCCM**, la console Configuration Manager sur cet ordinateur et des droits de lecture sur SCCM.
+Avec SCCM, Repère ne demande que les noms qu'il va proposer : un nom que SCCM a est sauté, sans changer l'endroit où la série reprend. Si l'AD finit à `ORD-0100` et que SCCM a `ORD-0101` et `ORD-0150`, le prochain nom est `ORD-0102`. Chaque nom est **Dans SCCM**, **Introuvable dans SCCM (avec vos accès)** ou **Vérification SCCM impossible**, avec la raison. SCCM peut ne montrer qu'une partie des ordinateurs à votre compte : un nom qu'il cache paraît introuvable. Il faut le site dans **Paramètres › SCCM**, la console Configuration Manager sur cet ordinateur et des droits de lecture sur SCCM.
 
 ## Utilisateurs
 

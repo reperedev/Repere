@@ -244,7 +244,7 @@ Describe 'Finding devices' {
 
     It 'Only ever reads' {
         $text = Get-Content (Join-Path $script:RepereSource 'Sccm.ps1') -Raw
-        [regex]::Matches($text, '\b\w+-CM\w+') | ForEach-Object Value | Select-Object -Unique | Sort-Object | Should -Be 'Get-CMDevice', 'Invoke-CMWmiQuery'
+        [regex]::Matches($text, '\b\w+-CM\w+') | ForEach-Object Value | Select-Object -Unique | Sort-Object | Should -Be 'Invoke-CMWmiQuery'
     }
 }
 
@@ -346,10 +346,10 @@ Describe 'The inventory' {
     }
 
     It 'A hung site that had its time is rested, even when its question ends with it' {
-        $null = Get-Find 'ORD-01'
+        # The first read, which has more time than the question has left.
         $script:SccmTimeoutSeconds, $script:SccmQuerySeconds, $script:SccmTotalSeconds = 10, 1, 2
         $env:REPERE_FAKEAD_SCCM_DELAY = '5'
-        (Get-SccmCheck $script:Site 'ORD-').Checked | Should -BeFalse
+        (Get-SccmName $script:Site 'ORD-01').Checked | Should -BeFalse
         $env:REPERE_FAKEAD_SCCM_DELAY = $null
         $script:SccmTotalSeconds = 120
         (Find-SccmDevice $script:Site -Name 'ORD-01' -Automatic).Checked | Should -BeFalse
@@ -504,20 +504,6 @@ Describe 'The runspace the reads share' {
             while ($script:SccmStopping.TryDequeue([ref]$entry)) { }
             $shell.Dispose()
         }
-    }
-
-    It 'Gives a Next name check only what''s left of its read''s time, and says when none is' {
-        $script:ReadTimeout, $script:SccmTotalSeconds = 1, 2
-        # Domains that take all of it.
-        function Get-ADComputer { Start-Sleep -Seconds 4 }
-        try { $read = Get-NextNameRead 'ORD-' @('demo.local') $script:Site }
-        finally { $script:ReadTimeout, $script:SccmTotalSeconds = 30, 120; Remove-Item function:Get-ADComputer }
-        $read.Sccm.Checked | Should -BeFalse
-        $read.Sccm.Reason | Should -BeExactly 'la lecture n''avait plus le temps de le demander'
-        # With time left, SCCM answers.
-        function Get-ADComputer { }
-        try { (Get-NextNameRead 'ORD-' @('demo.local') $script:Site).Sccm.Checked | Should -BeTrue }
-        finally { Remove-Item function:Get-ADComputer }
     }
 
     It 'A runspace that can''t be opened is said, never thrown, and the next read makes another' {

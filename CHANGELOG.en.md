@@ -12,6 +12,7 @@ Versions before 0.15.1 are described in French only, in [CHANGELOG.md](CHANGELOG
 - **Export and Copy rows follow the grid**: the columns shown, in their order, under their headers, and the distinguished name last. A hidden column is no longer exported: by default, **Email** on Users and **Managed by** on Groups.
 - **Windows errors are understood in every language**: access denied, computer unreachable, WinRM closed or SCCM site not found are recognized by their code, no longer only by their French or English text.
 - **SCCM**: "Not in SCCM" becomes "Not found in SCCM (with your access)", because SCCM may hide computers from your account. **Settings › SCCM › Test** also says whether this computer's inventory can be read, and through which server the site answers when it isn't the one in Settings. The console is loaded only once: the next checks are faster.
+- **Next name…** no longer asks SCCM for the whole series, only for the names it's about to offer: the console stopped its answer at 1,000 computers, and a large series could make a name SCCM had look free. A name SCCM has is skipped, without changing where the series goes on from, and the count line counts AD's names only.
 - **What's new is in English** when Repère is, from this version on, as are the launcher's questions (PowerShell 7.5 missing) and the console's messages.
 
 ### Computers
