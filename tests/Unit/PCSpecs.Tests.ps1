@@ -625,3 +625,255 @@ Describe 'Windows'' support: Get-WindowsRelease, its alerts and the Système col
         $system.Tip | Should -BeExactly "Windows 10 Professionnel 10.0 (19045)`n$EsuNote"
     }
 }
+
+Describe 'Caractéristiques from SCCM''s inventory (ConvertFrom-SccmInventory)' {
+    BeforeAll {
+        $script:Now = Get-Date
+        function New-SccmRow([hashtable]$Values) { [pscustomobject]$Values }
+        function New-SccmRead([hashtable]$Rows, [hashtable]$Failed = @{}, [int]$Count = 1, [string]$Answer = 'Found') {
+            # Get-SccmSpec' answer: every section of SccmSections, read with these rows (none for one not given), or
+            # failed with its reason.
+            $inventory = [ordered]@{}
+            foreach ($name in 'Scan', 'System', 'Bios', 'Windows', 'Network', 'Processor', 'Memory', 'Module', 'Disk', 'Volume', 'Program', 'Program64') {
+                $inventory[$name] = if ($Failed.ContainsKey($name)) { @{ Read = $false; Reason = $Failed[$name]; Rows = @() } }
+                                    else { @{ Read = $true; Reason = ''; Rows = @($Rows[$name] | Where-Object { $_ }) } }
+            }
+            @{ Answer = $Answer; Reason = ''; Count = $Count; Inventory = $inventory }
+        }
+        function Get-FullRow {
+            @{
+                Scan      = New-SccmRow @{ LastHardwareScan = $script:Now.AddDays(-3) }
+                System    = New-SccmRow @{ Name = 'PC-7'; Domain = 'demo.local'; Manufacturer = 'Contoso'; Model = 'Bureau 5000'; UserName = 'DEMO\mroy' }
+                Bios      = New-SccmRow @{ SerialNumber = 'SN-7'; SMBIOSBIOSVersion = '1.2'; ReleaseDate = [datetime]'2025-03-01' }
+                Windows   = New-SccmRow @{ Caption = 'Microsoft Windows 10 Pro'; Version = '10.0.19045'; BuildNumber = '19045'; OSArchitecture = '64-bit'; LastBootUpTime = $script:Now.AddDays(-60) }
+                Network   = @(
+                    New-SccmRow @{ Description = 'Wi-Fi'; IPAddress = @('192.0.2.30'); MACAddress = 'AA'; DefaultIPGateway = $null; DNSServerSearchOrder = $null; Index = 1; IPEnabled = 1 }
+                    New-SccmRow @{ Description = 'Ethernet'; IPAddress = @('192.0.2.7', 'fe80::7'); MACAddress = 'BB'; DefaultIPGateway = @('192.0.2.1'); DNSServerSearchOrder = @('192.0.2.2', '192.0.2.3'); Index = 2; IPEnabled = 1 }
+                    New-SccmRow @{ Description = 'Off'; IPAddress = $null; MACAddress = 'CC'; DefaultIPGateway = $null; DNSServerSearchOrder = $null; Index = 3; IPEnabled = 0 }
+                )
+                Processor = New-SccmRow @{ Name = 'Contoso CPU 5 @ 3.10GHz'; Manufacturer = 'GenuineIntel'; MaxClockSpeed = 3100; NumberOfCores = 4; NumberOfLogicalProcessors = 8; Architecture = 9 }
+                Memory    = New-SccmRow @{ TotalPhysicalMemory = 16777216 }
+                Module    = @(
+                    New-SccmRow @{ Capacity = 8192; Speed = 3200; MemoryType = 26; Manufacturer = 'Contoso'; PartNumber = 'M-8' }
+                    New-SccmRow @{ Capacity = 8192; Speed = 3200; MemoryType = 26; Manufacturer = 'Contoso'; PartNumber = 'M-8' }
+                )
+                Disk      = New-SccmRow @{ Index = 0; Model = 'Contoso SSD'; Size = 488000; InterfaceType = 'SCSI' }
+                Volume    = @(
+                    New-SccmRow @{ DeviceID = 'C:'; DriveType = 3; Size = 100000; FreeSpace = 5000; VolumeName = 'Windows' }
+                    New-SccmRow @{ DeviceID = 'E:'; DriveType = 2; Size = 1000; FreeSpace = 1000; VolumeName = 'USB' }
+                )
+                Program   = New-SccmRow @{ DisplayName = 'Contoso Agent'; Version = '3.1'; Publisher = 'Contoso'; InstallDate = '20260110' }
+                Program64 = New-SccmRow @{ DisplayName = 'Contoso Office'; Version = '16.0'; Publisher = 'Contoso'; InstallDate = $null }
+            }
+        }
+    }
+
+    It 'Gives a live reading''s shape, from SCCM, dated by its last inventory' {
+        $specs = ConvertFrom-SccmInventory (New-SccmRead (Get-FullRow)) 'PC-7'
+        Get-PCSpecSource $specs | Should -BeExactly 'SCCM'
+        $specs.Reachable | Should -BeTrue
+        $specs.ScanDate | Should -Be $script:Now.AddDays(-3)
+        @($specs.Missing) | Should -Be @('Monitor', 'Battery', 'Dock')
+        $specs.Errors.Count | Should -Be 0
+        $specs.General.ComputerName | Should -BeExactly 'PC-7'
+        $specs.General.LoggedOnUser | Should -BeExactly 'DEMO\mroy'
+        $specs.General.SerialNumber | Should -BeExactly 'SN-7'
+        $specs.General.OSName | Should -BeExactly 'Windows 10 Pro'
+        $specs.General.Build | Should -Be 19045
+        $specs.General.UptimeDays | Should -BeNullOrEmpty
+        $specs.General.Mobile | Should -BeNullOrEmpty
+        $specs.Processor.Cores | Should -BeExactly '4 / 8'
+        $specs.Processor.Vendor | Should -BeExactly 'Intel'
+        $specs.Memory.Total | Should -BeExactly (Format-Byte (16GB))
+        $specs.Memory.Type | Should -BeExactly 'DDR4'
+        $specs.Memory.Physical | Should -BeExactly "2 × $(Format-Byte (8GB))"
+        @($specs.Software.Programs.Name) | Should -Be @('Contoso Agent', 'Contoso Office')
+    }
+
+    It 'Takes the architecture from AddressWidth when the site has no Architecture: <Expected>' -ForEach @(
+        @{ Width = 64; SystemType = 'x64-based PC'; Expected = 'x64' }
+        @{ Width = 64; SystemType = 'ARM64-based PC'; Expected = 'ARM64' }
+        @{ Width = 32; SystemType = $null; Expected = 'x86' }
+        @{ Width = $null; SystemType = 'x64-based PC'; Expected = 'N/D' }
+    ) {
+        $rows = Get-FullRow
+        $rows.Processor = New-SccmRow @{ Name = 'Contoso CPU 5'; Manufacturer = 'GenuineIntel'; MaxClockSpeed = 3100; NumberOfCores = 4; NumberOfLogicalProcessors = 8; Architecture = $null; AddressWidth = $Width }
+        $rows.System | Add-Member SystemType $SystemType
+        $specs = ConvertFrom-SccmInventory (New-SccmRead $rows) 'PC-7'
+        $specs.Errors.Count | Should -Be 0
+        $specs.Processor.Architecture | Should -BeExactly $Expected
+    }
+
+    It 'Takes the adapter with a gateway first, the others with their name, and leaves out those without an address' {
+        $network = (ConvertFrom-SccmInventory (New-SccmRead (Get-FullRow)) 'PC-7').Network
+        $network.IPAddress | Should -BeExactly "192.0.2.7`n192.0.2.30 (Wi-Fi)"
+        $network.Adapter | Should -BeExactly 'Ethernet'
+        $network.MAC | Should -BeExactly 'BB'
+        $network.DNS | Should -BeExactly "192.0.2.2`n192.0.2.3"
+        $network.FQDN | Should -BeExactly 'PC-7.demo.local'
+    }
+
+    It 'Reads addresses given as one text with commas, as some sites do' {
+        $rows = Get-FullRow
+        $rows.Network = New-SccmRow @{ Description = 'Ethernet'; IPAddress = '192.0.2.7, fe80::7'; MACAddress = 'BB'; DefaultIPGateway = '192.0.2.1'; DNSServerSearchOrder = '192.0.2.2, 192.0.2.3'; Index = 1; IPEnabled = 'True' }
+        $network = (ConvertFrom-SccmInventory (New-SccmRead $rows) 'PC-7').Network
+        $network.IPAddress | Should -BeExactly '192.0.2.7'
+        $network.DNS | Should -BeExactly "192.0.2.2`n192.0.2.3"
+    }
+
+    It 'Puts the volumes on the disk when there''s one, and apart when there are several (SCCM doesn''t say which is where)' {
+        $one = (ConvertFrom-SccmInventory (New-SccmRead (Get-FullRow)) 'PC-7').Disk
+        @($one.Drives).Count | Should -Be 1
+        @($one.Drives[0].Volumes.Drive) | Should -Be @('C:')
+        $one.Drives[0].VolumesApart | Should -BeFalse
+        $rows = Get-FullRow
+        $rows.Disk = @((New-SccmRow @{ Index = 0; Model = 'A'; Size = 1000; InterfaceType = 'SCSI' }), (New-SccmRow @{ Index = 1; Model = 'B'; Size = 2000; InterfaceType = 'SCSI' }))
+        $two = (ConvertFrom-SccmInventory (New-SccmRead $rows) 'PC-7').Disk
+        @($two.Drives.Model) | Should -Be @('A', 'B', 'Volumes')
+        $two.Drives[0].VolumesApart | Should -BeTrue
+        @($two.Drives[2].Volumes.Drive) | Should -Be @('C:')
+        $two.DiskCount | Should -Be 2
+    }
+
+    It 'Says a class that couldn''t be read as its section''s error, and reads the others' {
+        $specs = ConvertFrom-SccmInventory (New-SccmRead (Get-FullRow) @{ Processor = 'accès refusé'; Bios = 'refusée' }) 'PC-7'
+        $specs.Errors['Processor'] | Should -BeExactly 'accès refusé'
+        $specs.Errors['General'] | Should -BeExactly 'refusée'
+        $specs.Processor | Should -BeNullOrEmpty
+        $specs.General | Should -BeNullOrEmpty
+        $specs.Network | Should -Not -BeNullOrEmpty
+        @($specs.Missing) | Should -Not -Contain 'Processor'
+    }
+
+    It 'Says a section whose classes are all empty isn''t in the inventory, not that it failed' {
+        $rows = Get-FullRow
+        $rows.Program = $null
+        $rows.Program64 = $null
+        $specs = ConvertFrom-SccmInventory (New-SccmRead $rows) 'PC-7'
+        $specs.Software | Should -BeNullOrEmpty
+        @($specs.Missing) | Should -Contain 'Software'
+        $specs.Errors.Keys | Should -Not -Contain 'Software'
+    }
+
+    It 'Reads the total memory without the modules, which not every site collects' {
+        $rows = Get-FullRow
+        $rows.Module = $null
+        $memory = (ConvertFrom-SccmInventory (New-SccmRead $rows @{ Module = 'classe inconnue' }) 'PC-7').Memory
+        $memory.Total | Should -BeExactly (Format-Byte (16GB))
+        $memory.Physical | Should -BeExactly 'N/D'
+    }
+
+    It 'Keeps the end of Windows'' support and a full disk, dated, and drops « not restarted », wrong by the inventory''s age' {
+        $alerts = @((ConvertFrom-SccmInventory (New-SccmRead (Get-FullRow)) 'PC-7').Alerts)
+        $date = Format-TextDate $script:Now.AddDays(-3) -Day
+        @($alerts.Field) | Should -Be @('BuildNumber', 'Volume:C:')
+        foreach ($alert in $alerts) { $alert.Message | Should -BeLike "* (inventaire du $date)" }
+    }
+
+    It 'Has no date when SCCM doesn''t say when it inventoried the computer' {
+        $rows = Get-FullRow
+        $rows.Scan = $null
+        $specs = ConvertFrom-SccmInventory (New-SccmRead $rows) 'PC-7'
+        $specs.ScanDate | Should -BeNullOrEmpty
+        @($specs.Alerts).Count | Should -Be 2
+        foreach ($alert in $specs.Alerts) { $alert.Message | Should -Not -BeLike '*inventaire du*' }
+        $specs.ScanFailure | Should -BeExactly ''
+        $lines = @((Format-PCSpecReport $specs) -split "`r?`n")
+        $lines[0] | Should -BeLike 'Caractéristiques de PC-7 — inventaire SCCM sans date, lu le *'
+        $lines[1] | Should -BeExactly "SCCM ne dit pas quand il l'a fait."
+    }
+
+    It 'Says why the date couldn''t be read, which is no section''s error' {
+        $rows = Get-FullRow
+        $rows.Scan = $null
+        $specs = ConvertFrom-SccmInventory (New-SccmRead $rows @{ Scan = 'Accès refusé' }) 'PC-7'
+        $specs.ScanDate | Should -BeNullOrEmpty
+        $specs.ScanFailure | Should -BeExactly 'Accès refusé'
+        $specs.Errors.Count | Should -Be 0
+        $specs.General | Should -Not -BeNullOrEmpty
+        $lines = @((Format-PCSpecReport $specs) -split "`r?`n")
+        $lines[0] | Should -BeLike 'Caractéristiques de PC-7 — inventaire SCCM sans date, lu le *'
+        $lines[1] | Should -BeExactly "La date de l'inventaire n'a pas été lue : Accès refusé."
+        (Format-PCSpecReport $specs) | Should -Not -BeLike '*date inconnue*'
+    }
+
+    It 'Leaves out the empty rows SCCM may give, and says a section that isn''t in the answer wasn''t read' {
+        $read = New-SccmRead (Get-FullRow)
+        $read.Inventory.Program.Rows = @($null, (New-SccmRow @{ DisplayName = 'Contoso Agent'; Version = '3.1'; Publisher = 'Contoso'; InstallDate = '20260110' }), $null)
+        $read.Inventory.Program64.Rows = @($null)
+        $read.Inventory.Remove('Processor')
+        $specs = ConvertFrom-SccmInventory $read 'PC-7'
+        @($specs.Software.Programs.Name) | Should -Be @('Contoso Agent')
+        $specs.Errors['Processor'] | Should -BeExactly "SCCM n'a pas été lu"
+        $specs.Processor | Should -BeNullOrEmpty
+    }
+
+    It 'Says a section, or the date, that failed without a reason as failed all the same' {
+        $read = New-SccmRead (Get-FullRow) @{ Disk = ''; Scan = '' }
+        $specs = ConvertFrom-SccmInventory $read 'PC-7'
+        $specs.Errors['Disk'] | Should -BeExactly "SCCM n'a pas dit pourquoi"
+        $specs.Disk | Should -BeNullOrEmpty
+        $specs.ScanFailure | Should -BeExactly "SCCM n'a pas dit pourquoi"
+    }
+
+    It 'Is Doubtful when the record may be another computer''s, even alone, and the report says so' -ForEach @(
+        @{ Answer = 'Found'; Count = 1; Doubtful = $false; Line = $null }
+        @{ Answer = 'Ambiguous'; Count = 1; Doubtful = $true; Line = "Repère n'est pas sûr que cette fiche SCCM soit celle de cet ordinateur." }
+        @{ Answer = 'Ambiguous'; Count = 2; Doubtful = $true; Latest = $true; Skipped = ''; Line = 'SCCM a 2 fiches qui peuvent être cet ordinateur : voici la plus récente.' }
+        @{ Answer = 'Ambiguous'; Count = 2; Doubtful = $true; Latest = $false; Skipped = 'Empty'; Line = 'SCCM a 2 fiches qui peuvent être cet ordinateur : voici la plus récente qui a un inventaire.' }
+        @{ Answer = 'Ambiguous'; Count = 2; Doubtful = $true; Latest = $false; Skipped = 'Unread'; Line = 'SCCM a 2 fiches qui peuvent être cet ordinateur : la plus récente n''a pas pu être lue, voici la suivante qui a un inventaire.' }
+    ) {
+        $read = New-SccmRead (Get-FullRow) -Count $Count -Answer $Answer
+        # Without Latest, as before Get-SccmSpec gave it: the latest.
+        if ($Count -gt 1) { $read.Latest, $read.LatestSkipped = $Latest, $Skipped }
+        $specs = ConvertFrom-SccmInventory $read 'PC-7'
+        $specs.Doubtful | Should -Be $Doubtful
+        $specs.Candidates | Should -Be $Count
+        $lines = @((Format-PCSpecReport $specs) -split "`r?`n")
+        $said = @($lines | Where-Object { $_ -match 'fiche' })
+        if ($Line) { $said | Should -Be @($Line) } else { $said | Should -BeNullOrEmpty }
+    }
+
+    It 'Says in the report where it comes from, the last user, what isn''t inventoried, and the records it may be' {
+        $report = Format-PCSpecReport (ConvertFrom-SccmInventory (New-SccmRead (Get-FullRow) -Count 2 -Answer 'Ambiguous') 'PC-7')
+        $lines = @($report -split "`r?`n")
+        $lines[0] | Should -BeLike "Caractéristiques de PC-7 — inventaire SCCM du $(Format-TextDate $script:Now.AddDays(-3) -Day), lu le *"
+        $lines | Should -Contain 'SCCM a 2 fiches qui peuvent être cet ordinateur : voici la plus récente.'
+        $lines | Should -Contain "Pas dans l'inventaire SCCM : Écrans, Batterie, Station d'accueil."
+        $lines | Should -Contain '  Dernier utilisateur : DEMO\mroy'
+        $lines | Should -Not -Contain '[Écrans]'
+    }
+
+    It 'Leaves a live reading''s report as it was' {
+        $report = Format-PCSpecReport (Get-PCSpec 'ord-01.demo.local')
+        Get-PCSpecSource (Get-PCSpec 'ord-01.demo.local') | Should -BeExactly 'Live'
+        $report | Should -Not -BeLike '*SCCM*'
+        $report | Should -BeLike '*Utilisateur connecté : *'
+    }
+}
+
+Describe 'How old an SCCM inventory is (Get-SccmScanAge)' {
+    It 'Is <Level> after <Age> days, with an inventory every 7 days' -ForEach @(
+        @{ Age = 0; Level = 'info'; Text = "aujourd'hui" }
+        @{ Age = 1; Level = 'info'; Text = 'hier' }
+        @{ Age = 14; Level = 'info'; Text = 'il y a 14 jours' }
+        @{ Age = 15; Level = 'warn'; Text = 'il y a 15 jours' }
+        @{ Age = 28; Level = 'warn'; Text = 'il y a 28 jours' }
+        @{ Age = 29; Level = 'crit'; Text = 'il y a 29 jours' }
+    ) {
+        $now = [datetime]'2026-11-26T12:00:00'
+        $age = Get-SccmScanAge $now.AddDays(-$Age) 7 $now
+        $age.Level | Should -BeExactly $Level
+        $age.Text | Should -BeExactly $Text
+    }
+
+    It 'Follows how often the site inventories computers' {
+        $now = [datetime]'2026-11-26T12:00:00'
+        (Get-SccmScanAge $now.AddDays(-15) 30 $now).Level | Should -BeExactly 'info'
+        (Get-SccmScanAge $now.AddDays(-3) 1 $now).Level | Should -BeExactly 'warn'
+    }
+
+    It 'Is very old when SCCM doesn''t say when' {
+        (Get-SccmScanAge $null 7).Level | Should -BeExactly 'crit'
+    }
+}

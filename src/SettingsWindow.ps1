@@ -1,7 +1,7 @@
 ﻿# Paramètres: one window for what Repère lets the user set, in sections chosen on the left: Apparence (the mode, the themes
 # and their editor, the text and the language, Theme.ps1), Déplacer vers (the OUs offered by « Déplacer vers… », which it
 # picks in a tree, beside the ones chosen), Redémarrage (the defaults of
-# « Redémarrer… », RestartDialog.ps1), SCCM (the site Prochain nom… asks, Sccm.ps1) and Raccourcis (the keyboard shortcuts, to read). Built the first time it's
+# « Redémarrer… », RestartDialog.ps1), SCCM (the site Prochain nom… and Caractéristiques ask, Sccm.ps1) and Raccourcis (the keyboard shortcuts, to read). Built the first time it's
 # opened, then hidden rather than closed. Dot-sourced by the main script, after Theme.ps1 and
 # RestartDialog.ps1; the Déplacer vers section uses the OU lookup of ComputerActions.ps1 (Get-MoveTarget, $ouCache).
 #
@@ -216,12 +216,13 @@ function Get-SettingsWindowXaml {
         <TextBlock x:Name="settings_password_status" Style="{StaticResource Txt.Muted}" Margin="0,12,0,0" TextWrapping="Wrap"/>
       </StackPanel>
 
-      <!-- Where « Prochain nom… » also looks (parametres.json). Its check reads, it writes nothing to SCCM. Saved as the
-           two boxes are left, and as the section or Paramètres is left (Save-SccmChoice); each box's problem under it. -->
+      <!-- Where « Prochain nom… » also looks, and what « Caractéristiques » reads when the computer can't be
+           (parametres.json). They read, they write nothing to SCCM. Saved as the boxes are left, and as the section or
+           Paramètres is left (Save-SccmChoice); each box's problem under it. -->
       <StackPanel x:Name="section_sccm" Visibility="Collapsed">
         <TextBlock Text="SCCM" FontSize="15" FontWeight="{DynamicResource R.FontWeightTitle}"/>
         <TextBlock Style="{StaticResource Txt.Faint}" FontSize="12" TextWrapping="Wrap" Margin="0,2,0,0"
-                   Text="Pour que « Prochain nom… » vérifie aussi dans SCCM."/>
+                   Text="Pour que « Prochain nom… » vérifie aussi dans SCCM, et que « Caractéristiques » lise son inventaire quand l'ordinateur ne peut pas être lu."/>
         <TextBlock Style="{StaticResource Txt.Label}" Margin="0,16,0,4" Text="Code du site"/>
         <TextBox x:Name="settings_sccm_site" Width="120" HorizontalAlignment="Left" MaxLength="3" CharacterCasing="Upper" AutomationProperties.Name="Code du site"/>
         <TextBlock x:Name="settings_sccm_site_problem" Foreground="{DynamicResource R.DangerText}" FontSize="12" Margin="0,4,0,0" TextWrapping="Wrap" Visibility="Collapsed"/>
@@ -230,6 +231,11 @@ function Get-SettingsWindowXaml {
         <TextBlock x:Name="settings_sccm_server_problem" Foreground="{DynamicResource R.DangerText}" FontSize="12" Margin="0,4,0,0" TextWrapping="Wrap" Visibility="Collapsed"/>
         <TextBlock Style="{StaticResource Txt.Faint}" FontSize="12" TextWrapping="Wrap" Margin="0,4,0,0"
                    Text="Le fournisseur SMS, souvent le serveur du site principal. Il faut la console Configuration Manager."/>
+        <TextBlock Style="{StaticResource Txt.Label}" Margin="0,14,0,4" Text="Inventaire matériel, en jours"/>
+        <TextBox x:Name="settings_sccm_days" Width="80" HorizontalAlignment="Left" MaxLength="2" AutomationProperties.Name="Inventaire matériel, en jours"/>
+        <TextBlock x:Name="settings_sccm_days_problem" Foreground="{DynamicResource R.DangerText}" FontSize="12" Margin="0,4,0,0" TextWrapping="Wrap" Visibility="Collapsed"/>
+        <TextBlock Style="{StaticResource Txt.Faint}" FontSize="12" TextWrapping="Wrap" Margin="0,4,0,0"
+                   Text="Tous les combien le site inventorie le matériel des ordinateurs, 7 jours par défaut. Un inventaire est ancien après deux de manqués, très ancien après quatre."/>
         <TextBlock x:Name="settings_sccm_status" Style="{StaticResource Txt.Muted}" Margin="0,12,0,0" TextWrapping="Wrap" Visibility="Collapsed"/>
         <Grid Margin="0,16,0,0">
           <Grid.ColumnDefinitions><ColumnDefinition Width="Auto"/><ColumnDefinition Width="*"/></Grid.ColumnDefinitions>
@@ -459,10 +465,11 @@ function Show-SettingsSection([string]$Key) {
 }
 
 function Connect-SccmSetting($Root) {
-    # SCCM: the site saved shown, then what's typed saved as the two boxes are left (nothing typed: no site, and
-    # Prochain nom… checks AD alone, which is said). Tester saves first, then asks that site.
+    # SCCM: the site saved shown, then what's typed saved as the boxes are left (nothing typed: no site, and Prochain
+    # nom… checks AD alone, which is said). Tester saves first, then asks that site.
     Reset-SccmSetting
-    foreach ($name in 'settings_sccm_site', 'settings_sccm_server') {
+    $boxes = 'settings_sccm_site', 'settings_sccm_server', 'settings_sccm_days'
+    foreach ($name in $boxes) {
         $box = $Root.FindName($name)
         # A box's problem goes as it's retyped, and so do « SCCM désactivé » and a test's answer, about what it held then.
         $box.Add_TextChanged({
@@ -472,10 +479,10 @@ function Connect-SccmSetting($Root) {
             $script:Settings.Root.FindName('settings_sccm_test_status').Text = ''
             $script:Settings.CloseAnyway = $false
         })
-        # From one box to the other, the pair isn't left yet: a site typed before its server isn't refused meanwhile.
+        # From one box to the other, the section isn't left yet: a site typed before its server isn't refused meanwhile.
         $box.Add_LostKeyboardFocus({
             $next = $args[1].NewFocus
-            if ($next -is [System.Windows.FrameworkElement] -and $next.Name -in 'settings_sccm_site', 'settings_sccm_server') { return }
+            if ($next -is [System.Windows.FrameworkElement] -and $next.Name -in 'settings_sccm_site', 'settings_sccm_server', 'settings_sccm_days') { return }
             $null = Save-SccmChoice
         })
         $box.Add_KeyDown({ if ($args[1].Key -eq 'Return') { $null = Save-SccmChoice } })
@@ -528,19 +535,28 @@ function Get-SavedSccmField {
     if ($saved) { ([string]$saved.SccmSite).Trim().ToUpperInvariant(); ([string]$saved.SccmServer).Trim() } else { ''; '' }
 }
 
+function Get-SavedSccmInterval {
+    # How often the site inventories computers, as parametres.json holds it, or SccmInventoryDays.
+    $saved = Read-JsonSetting $script:SettingsPath SccmInventoryDays
+    # The text checked is the one converted, as Read-SccmSetting does.
+    $text = if ($saved) { "$($saved.SccmInventoryDays)".Trim() } else { '' }
+    if ($text -and -not (Get-SccmDaysProblem $text)) { [int]$text } else { $script:SccmInventoryDays }
+}
+
 function Reset-SccmSetting {
     # The section shows the site saved, without problems or messages from before.
     $root = $script:Settings.Root
     $site, $server = (Get-SavedSccmField)
     $root.FindName('settings_sccm_site').Text = $site
     $root.FindName('settings_sccm_server').Text = $server
-    foreach ($field in 'site', 'server') { Show-SccmProblem $field '' }
+    $root.FindName('settings_sccm_days').Text = "$(Get-SavedSccmInterval)"
+    foreach ($field in 'site', 'server', 'days') { Show-SccmProblem $field '' }
     foreach ($name in 'settings_sccm_status', 'settings_sccm_test_status') { $root.FindName($name).Text = '' }
     $root.FindName('settings_sccm_status').Visibility = 'Collapsed'
 }
 
 function Show-SccmProblem([string]$Field, [string]$Text) {
-    # What's wrong with one box ('site' or 'server'), under it, the box outlined in red; '' takes both away.
+    # What's wrong with one box ('site', 'server' or 'days'), under it, the box outlined in red; '' takes both away.
     $root = $script:Settings.Root
     $box = $root.FindName("settings_sccm_$Field")
     $line = $root.FindName("settings_sccm_$($Field)_problem")
@@ -558,23 +574,31 @@ function Show-SccmStatus([string]$Text, [string]$Brush = 'R.Muted') {
 }
 
 function Save-SccmChoice {
-    # Saves the site and server typed, when they differ from those saved. 'Saved', 'Same', or 'Problem' when they
-    # can't be: each box's problem under it. Both empty is no site: Prochain nom… then checks AD alone, said here.
+    # Saves the site, server and days typed, when they differ from those saved. 'Saved', 'Same', or 'Problem' when they
+    # can't be: each box's problem under it. Both empty is no site: Prochain nom… then checks AD alone, and
+    # Caractéristiques reads no inventory, said here. No days typed: SccmInventoryDays, shown.
     $site, $server = (Get-SccmSettingField)
     $site = $site.ToUpperInvariant()
+    $daysBox = $script:Settings.Root.FindName('settings_sccm_days')
+    $daysText = $daysBox.Text.Trim()
     $savedSite, $savedServer = (Get-SavedSccmField)
+    $savedDays = Get-SavedSccmInterval
     $problem = if ($site -or $server) { Get-SccmFieldProblem $site $server } else { @{ Site = $null; Server = $null } }
+    $daysProblem = Get-SccmDaysProblem $daysText
     Show-SccmProblem 'site' $problem.Site
     Show-SccmProblem 'server' $problem.Server
-    if ($problem.Site -or $problem.Server) { return 'Problem' }
+    Show-SccmProblem 'days' $daysProblem
+    if ($problem.Site -or $problem.Server -or $daysProblem) { return 'Problem' }
     # Saved in capitals, and shown so: a code typed in another way than the keyboard's (pasted, UI Automation).
     $siteBox = $script:Settings.Root.FindName('settings_sccm_site')
     if ($siteBox.Text -cne $site) { $siteBox.Text = $site }
-    if ($site -ceq $savedSite -and $server -eq $savedServer) { return 'Same' }
-    Save-JsonSetting $script:SettingsPath ([ordered]@{ SccmSite = $site; SccmServer = $server }) -Merge
+    $days = if ($daysText) { [int]$daysText } else { $script:SccmInventoryDays }
+    if ($daysBox.Text -ne "$days") { $daysBox.Text = "$days" }
+    if ($site -ceq $savedSite -and $server -eq $savedServer -and $days -eq $savedDays) { return 'Same' }
+    Save-JsonSetting $script:SettingsPath ([ordered]@{ SccmSite = $site; SccmServer = $server; SccmInventoryDays = $days }) -Merge
     # Saved goes without saying, as in the rest of Paramètres; only a site taken away is said.
-    if ($site) { Show-SccmStatus '' }
-    else { Show-SccmStatus (Tr 'SCCM désactivé : « Prochain nom… » ne vérifiera que dans l''AD.') 'R.WarnText' }
+    if ($site -or -not $savedSite) { Show-SccmStatus '' }
+    else { Show-SccmStatus (Tr 'SCCM désactivé : « Prochain nom… » ne vérifiera que dans l''AD, et « Caractéristiques » ne lira plus son inventaire.') 'R.WarnText' }
     'Saved'
 }
 

@@ -958,25 +958,26 @@ $specsCheckScript = {
     [pscustomobject]@{ State = 'NoWinRM' }
 }.ToString()
 
-# The computers whose Caractéristiques are being checked, so a second click doesn't check them again.
+# The computers whose Caractéristiques are being checked, so a second click doesn't check them again; the toast each
+# one shows, and which is up (Show-SpecsCheckNotice): the bar shows one at a time, so one that ends while another runs
+# puts the other's back rather than leave its own up.
 $script:SpecsChecks = [System.Collections.Generic.HashSet[string]]::new([System.StringComparer]::OrdinalIgnoreCase)
+$script:SpecsCheckNotices = @{}
+$script:SpecsCheckNoticeShown = @{ HostName = ''; Text = '' }
 
 function Start-SpecsCheck($Computer) {
     # Caractéristiques: its window opens once the computer answers and can be read. Until then, a toast says Repère is
     # reaching it (and the pointer that it's working); a computer that's off says so within a few seconds, and one
     # without WinRM offers to turn it on, as PowerShell à distance does. A window already open comes to the front at
-    # once.
+    # once. With a site in Paramètres › SCCM: off, not in the DNS or too slow, SCCM's inventory instead, by itself
+    # (Start-SpecsSccmFallback); reached but unreadable, Lire depuis SCCM.
     if (Show-OpenSpecsWindow $Computer) { return }
     if (-not $script:SpecsChecks.Add($Computer.HostName)) { return }
-    Show-ActionNotice (Tr 'Caractéristiques') ((Tr 'Connexion à {0}…') -f $Computer.ComputerName) -Persist
+    Show-SpecsCheckNotice $Computer.HostName ((Tr 'Connexion à {0}…') -f $Computer.ComputerName)
     $script:win.Cursor = [System.Windows.Input.Cursors]::AppStarting
     Start-BackgroundAction $script:specsCheckScript @{ HostName = $Computer.HostName; FakeModule = $script:fakeADModule } 30 {
         param($output, $failure, $computer)
-        $null = $script:SpecsChecks.Remove($computer.HostName)
-        if (-not $script:SpecsChecks.Count) {
-            $script:win.ClearValue([System.Windows.FrameworkElement]::CursorProperty)
-            Hide-ActionNotice
-        }
+        Exit-SpecsCheck $computer.HostName
         $title = Tr 'Caractéristiques'
         $answer = if (-not $failure) { @($output)[-1] }
         $name = $computer.ComputerName
@@ -985,14 +986,26 @@ function Start-SpecsCheck($Computer) {
         # heading, one short line, and Windows' own messages, when there are some, in a box that can be copied. Notice
         # and Details are read by key: some warnings have none, and strict mode refuses a missing key read as a property.
         $warning = Get-SpecsCheckWarning $name $answer $failure
+        $sccm = if ($warning) { Read-SccmSetting }
         if ($warning -and $warning['Notice']) {
+            if ($sccm) { Start-SpecsSccmFallback $computer $sccm $warning.Notice (Get-SpecsCheckWhy $answer $failure); return }
             Show-ActionNotice $title $warning.Notice
             return
         }
         if ($warning) {
             $details = $warning['Details']
-            Show-Dialog -Title $title -Heading $warning.Heading -Message $warning.Message -Icon $warning.Icon -Tone 'warn' `
-                -Details $details -DetailsLabel $(if ($details) { Tr 'Message de Windows' })
+            $dialog = @{
+                Title = $title; Heading = $warning.Heading; Message = $warning.Message; Icon = $warning.Icon; Tone = 'warn'
+                Details = $details; DetailsLabel = $(if ($details) { Tr 'Message de Windows' })
+            }
+            # Reached, but it can't be read: SCCM's inventory is offered, not opened by itself, as the computer may
+            # well be read once the problem is fixed.
+            if ($sccm) {
+                $dialog.OkText = Tr 'Lire depuis SCCM'
+                $dialog.State = @{ Computer = $computer; Why = Get-SpecsCheckWhy $answer $failure; Failure = (Tr '{0} : {1}') -f $warning.Heading, $warning.Message }
+                $dialog.OnOk = { param($state) Open-SpecsWindow $state.Computer -FromSccm -Why $state.Why -Failure $state.Failure }
+            }
+            Show-Dialog @dialog
             return
         }
         if ($answer.State -eq 'Ready') {
@@ -1010,6 +1023,120 @@ function Start-SpecsCheck($Computer) {
         $message = Tr "Repère peut l'activer pour cette lecture. Il est remis comme avant à la fermeture de la fenêtre."
         Request-TemporaryWinRM $computer $title $message 'cpu' $hours 'Specs' (Tr 'Lire par DCOM')
     } $Computer
+}
+
+function Show-SpecsCheckNotice([string]$HostName, [string]$Text) {
+    # The toast of a check under way, kept up until it ends (Exit-SpecsCheck). What the bar shows is noted too: a
+    # notice shown since, by anything, isn't this one's.
+    Show-ActionNotice (Tr 'Caractéristiques') $Text -Persist
+    $script:SpecsCheckNotices[$HostName] = $Text
+    $script:SpecsCheckNoticeShown = @{ HostName = $HostName; Text = $script:toastText.Text }
+}
+
+function Exit-SpecsCheck([string]$HostName) {
+    # A check of Caractéristiques, or its read of SCCM, that ended: the computer can be clicked again, and once none
+    # runs, the pointer goes. The toast goes only while it still says a check's: another action's kept toast (gpupdate
+    # under way, Paramètres unreadable) stays. While another check runs, a toast still saying this one's gives way to
+    # the other's.
+    $null = $script:SpecsChecks.Remove($HostName)
+    $script:SpecsCheckNotices.Remove($HostName)
+    $shown = $script:SpecsCheckNoticeShown
+    $checkShown = $script:noticePersists -and $shown.Text -and $script:toastText.Text -ceq $shown.Text
+    if (-not $script:SpecsChecks.Count) {
+        $script:win.ClearValue([System.Windows.FrameworkElement]::CursorProperty)
+        if ($checkShown) { Hide-ActionNotice }
+        return
+    }
+    if ($shown.HostName -ne $HostName -or -not $checkShown) { return }
+    if (-not (Show-RunningSpecsCheckNotice)) { Hide-ActionNotice }
+}
+
+function Show-RunningSpecsCheckNotice {
+    # The toast of a check still under way, back in the bar; $false when none runs.
+    $other = @($script:SpecsCheckNotices.Keys | Where-Object { $script:SpecsChecks.Contains($_) }) | Select-Object -First 1
+    if (-not $other) { return $false }
+    $null = Show-SpecsCheckNotice $other $script:SpecsCheckNotices[$other]
+    $true
+}
+
+# A notice shown over a check's toast (how another check ended, say) fades after its few seconds: the check's comes
+# back, rather than an empty bar for the rest of the check. After the main script's tick, which hides the notice; kept
+# notices don't tick.
+$script:noticeTimer.Add_Tick({ $null = Show-RunningSpecsCheckNotice })
+
+function Start-SpecsSccmFallback($Computer, $Sccm, [string]$Notice, [string]$Why) {
+    # Caractéristiques of a computer that's off, not in the DNS or too slow ($Notice, the toast that says it): SCCM's
+    # inventory, read before the window opens, so that a computer SCCM has no record of only gets the toast, which
+    # then says so too. The toast says the inventory is being read, and the pointer that something runs, until then;
+    # a second click meanwhile doesn't read it again. No SID: the results don't read it, and Select-SccmDevice does
+    # without.
+    $null = $script:SpecsChecks.Add($Computer.HostName)
+    Show-SpecsCheckNotice $Computer.HostName ((Tr '{0} : lecture de son inventaire SCCM…') -f $Computer.ComputerName)
+    $script:win.Cursor = [System.Windows.Input.Cursors]::AppStarting
+    $context = @{ Computer = $Computer; Notice = $Notice; Why = $Why; Watch = [System.Diagnostics.Stopwatch]::StartNew() }
+    try {
+        Start-BackgroundRead -Command 'Get-SccmSpec' -Arguments @($Sccm, $Computer.ComputerName, $Computer.Domain) `
+            -Functions (Get-SccmReadFunction) -Variables (Get-SccmReadVariable) -Timeout (Get-SccmReadTimeout) -Context $context -OnDone {
+            param($context, $read, $problem)
+            $computer = $context.Computer
+            # First: whatever fails below, the computer isn't left blocked, nor the toast and the pointer up.
+            Exit-SpecsCheck $computer.HostName
+            Start-SccmStopSweep
+            try {
+                if (-not $problem -and $read -and $read.Inventory) {
+                    # How long it took, for the window's status.
+                    $read.Seconds = $context.Watch.Elapsed.TotalSeconds
+                    Open-SpecsWindow $computer -SccmRead $read -Why $context.Why -Failure ($context.Notice -replace '^✖\s*')
+                    return
+                }
+                $answer = if ($problem -or -not $read) { 'NotChecked' } else { [string]$read.Answer }
+                $reason = if ($problem) { ConvertTo-FrenchError $problem } elseif ($read -and $read.Reason) { [string]$read.Reason } else { Tr "sa réponse n'est pas lisible" }
+                # A record without an inventory has nothing to show, as one SCCM doesn't have: its reason says which.
+                $sccm = if ($answer -eq 'NotFound') { Tr 'introuvable dans SCCM (avec vos accès)' }
+                        elseif ($answer -eq 'NoInventory') { $reason }
+                        else { (Tr 'SCCM non vérifié : {0}') -f $reason }
+                Show-ActionNotice (Tr 'Caractéristiques') "$($context.Notice) · $sccm"
+            }
+            catch {
+                # Said in the toast, and logged as Complete-BackgroundRead would: not thrown, so the toast stays.
+                $sccm = (Tr 'Erreur inattendue : {0}') -f $_.Exception.Message
+                Show-ActionNotice (Tr 'Caractéristiques') "$($context.Notice) · $sccm"
+                Write-Host ((Tr '{0} : {1}') -f (Tr 'Caractéristiques'), $_)
+            }
+        }
+    }
+    catch {
+        # Not started: the computer can be clicked again, and the toast says what it would have without SCCM, and why.
+        # Logged, not thrown: Start-SpecsCheck's OnDone has no catch, and the Dispatcher's handler would put the raw
+        # error in the toast's place.
+        Exit-SpecsCheck $Computer.HostName
+        $notChecked = (Tr 'SCCM non vérifié : {0}') -f (ConvertTo-FrenchError $_.Exception.Message)
+        Show-ActionNotice (Tr 'Caractéristiques') "$Notice · $notChecked"
+        Write-Host ((Tr '{0} : {1}') -f (Tr 'Caractéristiques'), $_)
+    }
+}
+
+function Get-SpecsCheckWhy($Answer, [string]$Failure) {
+    # Why the computer wasn't read, as the banner over SCCM's inventory says it after its name: « ORD-06 ne répond
+    # pas. » ($Answer and $Failure: Get-SpecsCheckWarning's). Too slow only for the check's own time limit; access
+    # denied by the errors' codes, or by their text as Get-SpecsCheckWarning reads it.
+    $denied = 'Accès refusé|Access is denied|0x80070005'
+    if ($Failure -or -not $Answer) {
+        if ($Failure -eq ((Tr 'pas de réponse après {0} secondes (ordinateur éteint ou injoignable ?)') -f 30)) { return Tr "n'a pas répondu à temps" }
+        if ($Failure -match $denied) { return Tr 'ne peut pas être lu : accès refusé' }
+        return Tr 'ne peut pas être lu'
+    }
+    switch ($Answer.State) {
+        'NoDns' { return Tr "n'est pas dans le DNS" }
+        'Offline' { return Tr 'ne répond pas (ni au ping, ni à WinRM, ni à DCOM)' }
+        'Failed' {
+            $causes = $Answer.PSObject.Properties['Causes']
+            $kinds = @(if ($causes) { Get-ErrorKind $causes.Value })
+            $text = @('WinRMError', 'DcomError' | ForEach-Object { $property = $Answer.PSObject.Properties[$_]; if ($property) { "$($property.Value)" } }) -join ' '
+            if ($kinds -contains 'AccessDenied' -or (-not $kinds.Count -and $text -match $denied)) { return Tr 'ne peut pas être lu : accès refusé' }
+        }
+    }
+    Tr 'ne peut pas être lu'
 }
 
 function Get-SpecsCheckWarning([string]$Name, $Answer, [string]$Failure) {
@@ -1049,9 +1176,10 @@ function Get-SpecsCheckWarning([string]$Name, $Answer, [string]$Failure) {
     $null
 }
 
-function Open-SpecsWindow($Computer) {
-    # The window, once the computer answered; it keeps WinRM on while it's open when Repère turned it on there.
-    Show-SpecsWindow $Computer $script:win $script:windowIcon $script:fakeADModule
+function Open-SpecsWindow($Computer, $SccmRead, [string]$Why, [string]$Failure, [switch]$FromSccm) {
+    # The window, once the computer answered, or on SCCM's inventory (Show-SpecsWindow's -SccmRead and -FromSccm); it
+    # keeps WinRM on while it's open when Repère turned it on there.
+    Show-SpecsWindow $Computer $script:win $script:windowIcon $script:fakeADModule -SccmRead $SccmRead -Why $Why -Failure $Failure -FromSccm:$FromSccm
     $lease = $script:WinRMLeases[$Computer.HostName]
     $window = $script:SpecsWindows["$($Computer.Domain)|$($Computer.DistinguishedName)"]
     if (-not $lease -or -not $window) { return }

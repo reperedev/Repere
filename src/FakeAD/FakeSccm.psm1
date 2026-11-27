@@ -1,10 +1,12 @@
 ﻿# Fake ConfigurationManager module, for what asks SCCM with the fake AD. Loaded in place of the real one, in the runspace
 # of its own where $script:SccmLinkScript (Sccm.ps1) runs: that script is then the same, down to the site's drive.
 # The site is DEM on sccm.demo.local. All of it is invented, down to the serial numbers:
-# - ORD-01, which AD has too, with a full inventory; ORD-13 and ORD-14, which AD doesn't have, as a reinstalled or deleted
+# - ORD-01, which AD has too, with a full inventory; ORD-06, which AD has too (off there), inventoried 20 days ago, on
+#   Windows 10 and with a nearly full disk; ORD-13 and ORD-14, which AD doesn't have, as a reinstalled or deleted
 #   computer leaves: the first last scanned long ago, the second without a client, so never; VIEUX-01, which AD never had,
 #   obsolete;
-# - DOUBLE-01, twice, both current; RENTRE-01, an obsolete record and the current one, made since with another SID;
+# - DOUBLE-01, twice, both current; DOUBLE-02, twice too, the latest without a client, so without an inventory, the
+#   other with one; RENTRE-01, an obsolete record and the current one, made since with another SID;
 # - this computer, for Paramètres › SCCM › Tester.
 #
 # For the tests:
@@ -58,6 +60,9 @@ $script:Devices = @(
     New-Device 16777222 'DOUBLE-01' '' @{ FullDomainName = $null; ResourceDomainORWorkgroup = $null }
     New-Device 16777223 'RENTRE-01' 'S-1-5-21-1-2-3-9023' @{ Obsolete = 1 }
     New-Device 16777224 'RENTRE-01' 'S-1-5-21-1-2-3-9024'
+    New-Device 16777225 'ORD-06' 'S-1-5-21-1-2-3-9006'
+    New-Device 16777226 'DOUBLE-02' ''
+    New-Device 16777227 'DOUBLE-02' '' @{ Client = 0; Active = 0; ClientVersion = $null }
     New-Device 16777230 "$env:COMPUTERNAME" '' @{ FullDomainName = $script:HereDomain }
 )
 
@@ -74,11 +79,15 @@ $script:Classes = @{
         New-Row 16777217 @{ LastHardwareScan = $script:Now.AddDays(-2) }
         New-Row 16777218 @{ LastHardwareScan = $script:Now.AddDays(-45) }
         New-Row 16777224 @{ LastHardwareScan = $script:Now.AddDays(-1) }
+        New-Row 16777225 @{ LastHardwareScan = $script:Now.AddDays(-20) }
+        New-Row 16777226 @{ LastHardwareScan = $script:Now.AddDays(-4) }
     )
     SMS_G_System_COMPUTER_SYSTEM               = @(
         New-Row 16777217 @{ Name = 'ORD-01'; Domain = 'demo.local'; DomainRole = 1; Manufacturer = 'Contoso'; Model = 'Bureau 5000'; UserName = 'DEMO\mroy'; SystemType = 'x64-based PC' }
         New-Row 16777218 @{ Name = 'ORD-13'; Domain = 'demo.local'; DomainRole = 1; Manufacturer = 'Contoso'; Model = 'Portable 300'; UserName = $null; SystemType = 'x64-based PC' }
         New-Row 16777230 @{ Name = "$env:COMPUTERNAME"; Domain = 'demo.local'; DomainRole = 1; Manufacturer = 'Contoso'; Model = 'Portable 300'; UserName = $null; SystemType = 'x64-based PC' }
+        New-Row 16777225 @{ Name = 'ORD-06'; Domain = 'demo.local'; DomainRole = 1; Manufacturer = 'Contoso'; Model = 'Bureau 3000'; UserName = 'DEMO\pause'; SystemType = 'x64-based PC' }
+        New-Row 16777226 @{ Name = 'DOUBLE-02'; Domain = 'demo.local'; DomainRole = 1; Manufacturer = 'Contoso'; Model = 'Bureau 3000'; UserName = $null; SystemType = 'x64-based PC' }
     )
     SMS_G_System_PC_BIOS                       = @(
         New-Row 16777217 @{ SerialNumber = 'DEMO0001'; SMBIOSBIOSVersion = '1.14.0'; ReleaseDate = [datetime]'2025-03-01'; Manufacturer = 'Contoso' }
@@ -87,24 +96,38 @@ $script:Classes = @{
         # The same serial number under two records.
         New-Row 16777221 @{ SerialNumber = 'DEMO0021'; SMBIOSBIOSVersion = '1.2.0'; ReleaseDate = $null; Manufacturer = 'Contoso' }
         New-Row 16777222 @{ SerialNumber = 'DEMO0021'; SMBIOSBIOSVersion = '1.2.0'; ReleaseDate = $null; Manufacturer = 'Contoso' }
+        New-Row 16777225 @{ SerialNumber = 'DEMO0006'; SMBIOSBIOSVersion = '2.4.1'; ReleaseDate = [datetime]'2023-06-01'; Manufacturer = 'Contoso' }
+        New-Row 16777226 @{ SerialNumber = 'DEMO0026'; SMBIOSBIOSVersion = '2.4.1'; ReleaseDate = [datetime]'2023-06-01'; Manufacturer = 'Contoso' }
     )
     SMS_G_System_OPERATING_SYSTEM              = @(
         New-Row 16777217 @{ Caption = 'Microsoft Windows 11 Enterprise'; Version = '10.0.26100'; BuildNumber = '26100'; OSArchitecture = '64-bit'; InstallDate = $script:Now.AddDays(-200); LastBootUpTime = $script:Now.AddDays(-9); TotalVisibleMemorySize = [uint64]16500000 }
+        New-Row 16777225 @{ Caption = 'Microsoft Windows 10 Pro'; Version = '10.0.19045'; BuildNumber = '19045'; OSArchitecture = '64-bit'; InstallDate = $script:Now.AddDays(-900); LastBootUpTime = $script:Now.AddDays(-40); TotalVisibleMemorySize = [uint64]8300000 }
     )
     SMS_G_System_NETWORK_ADAPTER_CONFIGURATION = @(
         New-Row 16777217 @{ Description = 'Contoso Ethernet'; IPAddress = '192.0.2.11, fe80::1'; MACAddress = '00:00:5E:00:53:01'; DefaultIPGateway = '192.0.2.1'; DNSServerSearchOrder = '192.0.2.2, 192.0.2.3'; DNSDomain = 'demo.local'; DHCPEnabled = 1; Index = 1; IPEnabled = 1 }
         New-Row 16777217 @{ Description = 'Contoso Wi-Fi'; IPAddress = $null; MACAddress = '00:00:5E:00:53:02'; DefaultIPGateway = $null; DNSServerSearchOrder = $null; DNSDomain = $null; DHCPEnabled = 1; Index = 2; IPEnabled = 0 }
+        New-Row 16777225 @{ Description = 'Contoso Ethernet'; IPAddress = '192.0.2.16'; MACAddress = '00:00:5E:00:53:06'; DefaultIPGateway = '192.0.2.1'; DNSServerSearchOrder = '192.0.2.2'; DNSDomain = 'demo.local'; DHCPEnabled = 1; Index = 1; IPEnabled = 1 }
     )
     SMS_G_System_PROCESSOR                     = @(
         New-Row 16777217 @{ Name = 'Contoso CPU 7'; Manufacturer = 'Contoso'; MaxClockSpeed = [uint32]2400; NumberOfCores = [uint32]8; NumberOfLogicalProcessors = [uint32]16; Architecture = 9; AddressWidth = 64 }
+        New-Row 16777225 @{ Name = 'Contoso CPU 5'; Manufacturer = 'Contoso'; MaxClockSpeed = [uint32]3100; NumberOfCores = [uint32]4; NumberOfLogicalProcessors = [uint32]8; Architecture = 9; AddressWidth = 64 }
     )
-    SMS_G_System_X86_PC_MEMORY                 = @(New-Row 16777217 @{ TotalPhysicalMemory = [uint64]16500000 })
+    SMS_G_System_X86_PC_MEMORY                 = @(
+        New-Row 16777217 @{ TotalPhysicalMemory = [uint64]16500000 }
+        New-Row 16777225 @{ TotalPhysicalMemory = [uint64]8300000 }
+    )
     SMS_G_System_PHYSICAL_MEMORY               = @(
         New-Row 16777217 @{ BankLabel = 'BANK 0'; DeviceLocator = 'DIMM 1'; Capacity = [uint64]8192; Speed = 4800; MemoryType = 0; FormFactor = 8; Manufacturer = 'Contoso'; PartNumber = 'DEMO-8' }
         New-Row 16777217 @{ BankLabel = 'BANK 1'; DeviceLocator = 'DIMM 2'; Capacity = [uint64]8192; Speed = 4800; MemoryType = 0; FormFactor = 8; Manufacturer = 'Contoso'; PartNumber = 'DEMO-8' }
     )
-    SMS_G_System_DISK                          = @(New-Row 16777217 @{ Index = 0; Model = 'Contoso SSD 512'; Caption = 'Contoso SSD 512'; Size = [uint64]488000; InterfaceType = 'SCSI' })
-    SMS_G_System_LOGICAL_DISK                  = @(New-Row 16777217 @{ DeviceID = 'C:'; DriveType = 3; Size = [uint64]487000; FreeSpace = [uint64]210000; FileSystem = 'NTFS'; VolumeName = 'Windows' })
+    SMS_G_System_DISK                          = @(
+        New-Row 16777217 @{ Index = 0; Model = 'Contoso SSD 512'; Caption = 'Contoso SSD 512'; Size = [uint64]488000; InterfaceType = 'SCSI' }
+        New-Row 16777225 @{ Index = 0; Model = 'Contoso HDD 256'; Caption = 'Contoso HDD 256'; Size = [uint64]244000; InterfaceType = 'IDE' }
+    )
+    SMS_G_System_LOGICAL_DISK                  = @(
+        New-Row 16777217 @{ DeviceID = 'C:'; DriveType = 3; Size = [uint64]487000; FreeSpace = [uint64]210000; FileSystem = 'NTFS'; VolumeName = 'Windows' }
+        New-Row 16777225 @{ DeviceID = 'C:'; DriveType = 3; Size = [uint64]243000; FreeSpace = [uint64]12000; FileSystem = 'NTFS'; VolumeName = '' }
+    )
     SMS_G_System_ADD_REMOVE_PROGRAMS           = @(New-Row 16777217 @{ DisplayName = 'Contoso Agent'; Version = '3.1'; Publisher = 'Contoso'; InstallDate = '20260110'; ProdID = 'ContosoAgent' })
     SMS_G_System_ADD_REMOVE_PROGRAMS_64        = @(
         New-Row 16777217 @{ DisplayName = 'Contoso Office'; Version = '16.0'; Publisher = 'Contoso'; InstallDate = '20260111'; ProdID = 'ContosoOffice' }

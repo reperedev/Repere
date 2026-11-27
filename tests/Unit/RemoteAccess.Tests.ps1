@@ -294,6 +294,42 @@ Describe 'Enable-TemporaryWinRM and Restore-TemporaryWinRM' {
     }
 }
 
+Describe 'Get-SpecsCheckWhy: why the computer wasn''t read, over SCCM''s inventory' {
+    BeforeAll {
+        $source = Get-RepereScriptAst (Join-Path $script:RepereSource 'ComputerActions.ps1')
+        $definition = $source.Find({ param($node) $node -is [System.Management.Automation.Language.FunctionDefinitionAst] -and $node.Name -eq 'Get-SpecsCheckWhy' }, $true)
+        . ([scriptblock]::Create($definition.Extent.Text))
+    }
+
+    It 'Says <Why> when <Case>' -ForEach @(
+        @{ Case = 'it is off'; Answer = @{ State = 'Offline'; Ping = $false }; Failure = ''; Why = 'ne répond pas (ni au ping, ni à WinRM, ni à DCOM)' }
+        @{ Case = 'it is not in the DNS'; Answer = @{ State = 'NoDns' }; Failure = ''; Why = "n'est pas dans le DNS" }
+        @{ Case = 'the check ran out of time'; Answer = $null; Failure = 'pas de réponse après 30 secondes (ordinateur éteint ou injoignable ?)'; Why = "n'a pas répondu à temps" }
+        @{ Case = 'the check failed otherwise'; Answer = $null; Failure = 'Boom'; Why = 'ne peut pas être lu' }
+        @{ Case = 'the check failed, access denied'; Answer = $null; Failure = 'Accès refusé. (0x80070005)'; Why = 'ne peut pas être lu : accès refusé' }
+        @{ Case = 'access is denied'; Answer = @{ State = 'Failed'; Causes = @([System.UnauthorizedAccessException]::new('Access is denied.')) }; Failure = ''; Why = 'ne peut pas être lu : accès refusé' }
+        @{ Case = 'access is denied, by the text alone'; Answer = @{ State = 'Failed'; WinRMError = $null; DcomError = 'Access is denied.' }; Failure = ''; Why = 'ne peut pas être lu : accès refusé' }
+        @{ Case = 'it fails otherwise'; Answer = @{ State = 'Failed'; Causes = @([System.Exception]::new('Other')) }; Failure = ''; Why = 'ne peut pas être lu' }
+    ) {
+        $given = if ($Answer) { [pscustomobject]$Answer }
+        Get-SpecsCheckWhy $given $Failure | Should -BeExactly $Why
+    }
+}
+
+Describe 'Get-SpecsReadWhy: why the window''s reading didn''t reach the computer, and whether it answered' {
+    It 'Says <Why> when <Case>' -ForEach @(
+        @{ Case = 'it is not in the DNS'; Message = "Impossible de joindre ord-03.demo.local : nom 'ord-03.demo.local' introuvable dans le DNS."; Why = "n'est pas dans le DNS"; Reached = $false }
+        @{ Case = 'it is off'; Message = "Impossible de joindre ord-06.demo.local : l'ordinateur semble hors ligne (pas de réponse au ping). WinRM : le port 5985 ne répond pas | DCOM : The RPC server is unavailable."; Why = 'ne répond pas (ni au ping, ni à WinRM, ni à DCOM)'; Reached = $false }
+        @{ Case = 'access is denied, ping blocked'; Message = "Impossible de joindre ord-06.demo.local : l'ordinateur semble hors ligne (pas de réponse au ping). WinRM : Access is denied. | DCOM : Access is denied."; Why = 'ne peut pas être lu : accès refusé'; Reached = $true }
+        @{ Case = 'access is denied, in French'; Message = "Impossible de joindre ord-06.demo.local : l'ordinateur répond au ping : vérifiez WinRM, le pare-feu et vos droits d'administrateur. WinRM : Accès refusé. | DCOM : Accès refusé."; Why = 'ne peut pas être lu : accès refusé'; Reached = $true }
+        @{ Case = 'it answers ping only'; Message = "Impossible de joindre ord-08.demo.local : l'ordinateur répond au ping : vérifiez WinRM, le pare-feu et vos droits d'administrateur. WinRM : le port 5985 ne répond pas | DCOM : The RPC server is unavailable."; Why = 'ne peut pas être lu'; Reached = $true }
+    ) {
+        $said = Get-SpecsReadWhy $Message
+        $said.Why | Should -BeExactly $Why
+        $said.Reached | Should -Be $Reached
+    }
+}
+
 Describe 'Get-SpecsCheckWarning: what Caractéristiques says when a computer can''t be read' {
     BeforeAll {
         # ComputerActions.ps1 loads only with the window: the function alone, from its source.

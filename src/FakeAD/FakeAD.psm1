@@ -17,6 +17,10 @@
 # - $env:REPERE_FAKEAD_SPECS_DELAY: milliseconds; each CIM query of the Caractéristiques window takes that long, like
 #   a computer slow to answer.
 # - $env:REPERE_FAKEAD_QUSER_HANG: a computer's DNS name; quser on it doesn't answer for 2 minutes.
+# - $env:REPERE_FAKEAD_OFFLINE: a file path; while it exists, the computers it lists (DNS names, one per line) answer
+#   nothing, as computers that are off. Deleting it brings them back.
+# - $env:REPERE_FAKEAD_CIM_DENIED: DNS names separated by semicolons; WinRM's port and DCOM's answer there, and CIM
+#   refuses this account (access denied).
 # - $env:REPERE_FAKEAD_WINRM_ON_ERROR: when set, turning WinRM on fails once it's on: deleting the task that turned it
 #   on throws, as Unregister-ScheduledTask -Confirm:$false did over DCOM (#316), for any other such failure.
 #
@@ -1247,6 +1251,18 @@ function Move-ADObject {
     $computer.DistinguishedName = $newDN
 }
 
+function Test-FakeOffline([string]$HostName) {
+    # Whether a computer is off for now (REPERE_FAKEAD_OFFLINE).
+    $file = $env:REPERE_FAKEAD_OFFLINE
+    if (-not $file -or -not (Test-Path -LiteralPath $file)) { return $false }
+    @(Get-Content -LiteralPath $file | ForEach-Object { $_.Trim() }) -contains $HostName
+}
+
+function Test-FakeCimDenied([string]$HostName) {
+    # Whether CIM refuses this account on a computer (REPERE_FAKEAD_CIM_DENIED).
+    $HostName -and @("$env:REPERE_FAKEAD_CIM_DENIED" -split ';' | ForEach-Object { $_.Trim() }) -contains $HostName
+}
+
 function Test-Connection {
     # Replaces the real one for the fake computers, which don't exist on the network. Only what Repère uses:
     # one ping or one TCP port, with -Quiet. Not logged: the online check calls it from parallel runspaces.
@@ -1260,6 +1276,7 @@ function Test-Connection {
         [switch]$Quiet
     )
 
+    if (Test-FakeOffline $TargetName) { return $false }
     $online = $script:OnlineHosts[$TargetName]
     if ($PSBoundParameters.ContainsKey('TcpPort')) { $online -eq [string]$TcpPort } else { $online -eq 'ping' }
 }
@@ -1270,7 +1287,9 @@ function Test-ComputerPort {
     # Repère turns it on), DCOM (135) on those that answer CIM (ord-01 and ord-04).
     [Diagnostics.CodeAnalysis.SuppressMessageAttribute('PSReviewUnusedParameter', 'TimeoutMilliseconds', Justification = 'Same parameters as the real one.')]
     param([string]$HostName, [int[]]$Ports, [int]$TimeoutMilliseconds)
+    if (Test-FakeOffline $HostName) { return $null }
     foreach ($port in $Ports) {
+        if ($port -in 5985, 135 -and (Test-FakeCimDenied $HostName)) { return $port }
         if ($script:OnlineHosts[$HostName] -eq [string]$port) { return $port }
         if ($port -eq 5985 -and $script:Store.WinRM[$HostName]) { return $port }
         if ($port -eq 135 -and (Get-FakeCimData $HostName)) { return $port }
@@ -1552,7 +1571,8 @@ function New-CimSession {
         $SessionOption
     )
 
-    if (-not $ComputerName -or -not (Get-FakeCimData $ComputerName)) {
+    if (Test-FakeCimDenied $ComputerName) { throw (New-FakeCimError 'Access is denied.' 0x80070005L) }
+    if (-not $ComputerName -or (Test-FakeOffline $ComputerName) -or -not (Get-FakeCimData $ComputerName)) {
         if ($SessionOption -and $SessionOption.Protocol -eq 'Dcom') { throw (New-FakeCimError 'The RPC server is unavailable.' 0x800706BAL) }
         throw (New-FakeCimError "WinRM cannot complete the operation. Verify that the specified computer name is valid, that the computer is accessible over the network, and that a firewall exception for the WinRM service is enabled and allows access from this computer." 0x80338126L)
     }

@@ -16,6 +16,7 @@ Versions before 0.15.1 are described in French only, in [CHANGELOG.md](CHANGELOG
 - **What's new is in English** when Repère is, from this version on, as are the launcher's questions (PowerShell 7.5 missing) and the console's messages.
 
 ### Computers
+- **Specifications reads SCCM's inventory when the computer can't be read**: off, not in DNS or too slow, the window opens by itself on its last inventory, under a banner that gives its date, amber then red as it ages; reached but unreadable (access denied), **Read from SCCM** offers it. **Refresh** (F5) tries the computer first, and **Copy** and **Export** say where the values come from. It needs the site in **Settings › SCCM**, which also asks how often it inventories computers (7 days by default).
 - **Disable** and **Move to…** again leave out a domain controller, or the computer Repère runs on, when several computers are selected: they were only spared when selected alone.
 - **Export** gives **Online** and the IP address when the column is shown, the location as the grid shows it (`Postes › Communs`) and the exact date of the last logon. The file it suggests is named after the domain searched, `Repere_computers_demo.local_2026-11-24.csv`, or after none when there were several.
 - **A Windows release newer than Repère** shows by its number ("Windows 11 (build 26300)"), without an alert or a color: the tooltip and **Specifications** say that its end of support isn't known yet.

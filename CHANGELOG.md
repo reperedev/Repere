@@ -14,6 +14,7 @@
 - **Nouveautés est en anglais** quand Repère l'est, à partir de cette version, comme les questions du lanceur (PowerShell 7.5 absent) et les messages de la console.
 
 ### Ordinateurs
+- **Caractéristiques lit l'inventaire SCCM quand l'ordinateur ne peut pas l'être** : éteint, absent du DNS ou trop lent, la fenêtre s'ouvre d'elle-même sur son dernier inventaire, sous un bandeau qui dit sa date, orange puis rouge quand il vieillit ; joint mais illisible (accès refusé), **Lire depuis SCCM** le propose. **Actualiser** (F5) essaie d'abord l'ordinateur, et **Copier** et **Exporter** disent d'où viennent les valeurs. Il faut le site dans **Paramètres › SCCM**, qui demande aussi tous les combien il inventorie les ordinateurs (7 jours par défaut).
 - **Désactiver** et **Déplacer vers…** laissent de nouveau de côté un contrôleur de domaine, ou l'ordinateur où Repère est ouvert, quand plusieurs ordinateurs sont sélectionnés : ils n'étaient épargnés que sélectionnés seuls.
 - **Exporter** donne **En ligne** et l'adresse IP quand la colonne est affichée, l'emplacement tel que la grille le montre (`Postes › Communs`) et la date exacte de la dernière connexion. Le fichier proposé porte le nom du domaine cherché, `Repere_ordinateurs_demo.local_2026-11-24.csv`, ou aucun quand il y en a plusieurs.
 - **Une version de Windows plus récente que Repère** s'affiche par son numéro (« Windows 11 (build 26300) »), sans alerte ni couleur : l'info-bulle et **Caractéristiques** disent que sa fin de support n'est pas encore connue.

@@ -103,6 +103,39 @@ Describe 'Start-BackgroundRead: a time limit for a DC that stops answering' {
         $done.TimedOut | Should -BeFalse
     }
 
+    It 'Never starts a read waiting for the runspaces that an OnDone stopped earlier in the same tick' {
+        # Both wait for runspaces still to open; the first, stopped, stops the second from its OnDone, in the tick
+        # that finds them open.
+        $opened = $script:searchPool
+        $script:searchPool = [runspacefactory]::CreateRunspacePool(1, 2)
+        try {
+            $script:StopTest = @{ First = @{ Id = 1 }; Second = @{ Id = 2 }; Done = @{} }
+            Start-BackgroundRead -Command 'Get-QuickRead' -Context $script:StopTest.First -OnDone {
+                param($context, $read, $problem)
+                Stop-BackgroundRead $script:StopTest.Second
+            }
+            Start-BackgroundRead -Command 'Get-QuickRead' -Context $script:StopTest.Second -OnDone {
+                param($context, $read, $problem)
+                $script:StopTest.Done.Read = $read; $script:StopTest.Done.Problem = $problem
+            }
+            $second = $script:BackgroundReadList[$script:BackgroundReadList.Count - 1]
+            Stop-BackgroundRead $script:StopTest.First
+            $script:searchPool.Open()
+            Complete-BackgroundRead
+            $second.Stopped | Should -BeTrue
+            $second.Handle | Should -BeNullOrEmpty
+            Complete-BackgroundRead
+            $script:BackgroundReadList.Contains($second) | Should -BeFalse
+            $script:StopTest.Done.Read | Should -BeNullOrEmpty
+            $script:StopTest.Done.Problem | Should -BeExactly ([System.Management.Automation.PipelineStoppedException]::new().Message)
+        }
+        finally {
+            $script:BackgroundReadTimer.Stop()
+            $script:searchPool.Dispose()
+            $script:searchPool = $opened
+        }
+    }
+
     It 'Ends a read started from a window its OnDone opened, while that window is open' {
         # ShowDialog's loop, as a dispatcher frame; the window's thread ticks the timer.
         $state = @{ Frame = [System.Windows.Threading.DispatcherFrame]::new(); Inner = [System.Windows.Threading.DispatcherFrame]::new(); Read = $null; InTime = $null }

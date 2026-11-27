@@ -447,6 +447,9 @@ function Get-PCSpec {
         Timings   = [ordered]@{}
         Protocol  = $null
         SoftwareVia = $null
+        # Where it comes from: Live, the computer itself, or SCCM (ConvertFrom-SccmInventory).
+        Source    = 'Live'
+        ScanDate  = $null
     }
     $watch = [System.Diagnostics.Stopwatch]::StartNew()
     $report = {
@@ -990,6 +993,265 @@ function Get-PCSpec {
     [pscustomobject]$result
 }
 
+function Get-SccmSpecRow($Inventory, [string]$Name) {
+    # The rows of one of Get-SccmInventory's sections, none when it wasn't read.
+    $section = if ($Inventory) { $Inventory[$Name] }
+    if ($section -and $section.Read) { @($section.Rows | Where-Object { $_ }) } else { @() }
+}
+
+function Get-SccmSpecFailure($Inventory, [string[]]$Name) {
+    # Why one of these sections couldn't be read, the first one's; nothing when they all were. Never '' for one that
+    # wasn't: its callers take an empty reason for a section read.
+    foreach ($key in $Name) {
+        $section = if ($Inventory) { $Inventory[$key] }
+        if (-not $section) { return Tr "SCCM n'a pas été lu" }
+        if (-not $section.Read) { return Get-SccmSectionReason $section }
+    }
+}
+
+function Get-SccmSectionReason($Section) {
+    # Why a section that failed did: its Reason, which an error without a message leaves empty.
+    $reason = [string]$Section.Reason
+    if ($reason) { $reason } else { Tr "SCCM n'a pas dit pourquoi" }
+}
+
+function Get-SccmSpecText($Value) {
+    # A value SCCM gives as a list or as a text with commas (an adapter's addresses), as its items.
+    foreach ($item in @($Value)) { foreach ($part in ("$item" -split ',')) { if ($part.Trim()) { $part.Trim() } } }
+}
+
+function ConvertFrom-SccmInventory($Read, [string]$Query) {
+    # Caractéristiques from SCCM's inventory ($Read: Get-SccmSpec', Sccm.ps1) in Get-PCSpec's shape, so the window,
+    # Copier and Exporter show it as a live reading: Source SCCM, ScanDate (its last hardware inventory, $null when SCCM
+    # doesn't say), ScanFailure (why that date couldn't be read, '' when it was: it's no section's, so not in Errors,
+    # which counts sections), Candidates (the records SCCM has that may be this computer), Latest (whether the one read
+    # is the latest of them, Get-SccmSpec's: the latest may have no inventory), LatestSkipped (why not: Empty or
+    # Unread, '' when it is or Get-SccmSpec didn't say), Doubtful
+    # (the record read may not be this computer's: Select-SccmDevice's Ambiguous, even alone) and Missing, the
+    # sections its inventory doesn't have: Écrans, Batterie and Station d'accueil, which it doesn't collect by default,
+    # and one whose classes are all empty. A class that couldn't be read is its section's error. As of the scan: no
+    # « not restarted » alert, which would be wrong by its age, and the others say the inventory's date. Strict, as
+    # Get-PCSpec: what SCCM doesn't give as expected fails its section (below), not later in the window.
+    Set-StrictMode -Version Latest
+    $inventory = $Read.Inventory
+    $na = Tr 'N/D'
+    $result = [ordered]@{
+        Query = $Query; Timestamp = Get-Date; Reachable = $true; Errors = [ordered]@{}; Alerts = @()
+        General = $null; Network = $null; Processor = $null; Memory = $null; Disk = $null; Monitor = $null; Battery = $null; Dock = $null; Software = $null
+        Timings = [ordered]@{}; Protocol = $null; SoftwareVia = $null
+        Source = 'SCCM'; ScanDate = $null; ScanFailure = ''; Candidates = [int]$Read.Count; Latest = $Read['Latest'] -ne $false; LatestSkipped = "$($Read['LatestSkipped'])"; Doubtful = $Read.Answer -eq 'Ambiguous'
+        Missing = [System.Collections.Generic.List[string]]::new()
+    }
+    foreach ($key in 'Monitor', 'Battery', 'Dock') { $result.Missing.Add($key) }
+    $first = { param($name) Get-SccmSpecRow $inventory $name | Select-Object -First 1 }
+    $scan = & $first 'Scan'
+    if ($scan -and $scan.LastHardwareScan -is [datetime]) { $result.ScanDate = $scan.LastHardwareScan }
+    $scanRead = if ($inventory) { $inventory['Scan'] }
+    if ($scanRead -and -not $scanRead.Read) { $result.ScanFailure = Get-SccmSectionReason $scanRead }
+    # A section from its classes: its error when one couldn't be read, Missing when they're all empty, else its data.
+    $section = {
+        param([string]$Key, [string[]]$Classes, [scriptblock]$Make)
+        $failure = Get-SccmSpecFailure $inventory $Classes
+        if ($failure) { $result.Errors[$Key] = $failure; return }
+        if (-not @($Classes | Where-Object { @(Get-SccmSpecRow $inventory $_).Count }).Count) { $result.Missing.Add($Key); return }
+        # What SCCM gives that Repère doesn't read as it expects is that section's error, not the reading's.
+        try { $result[$Key] = & $Make }
+        catch { $result.Errors[$Key] = $_.Exception.Message.Trim() }
+    }
+    $system = & $first 'System'
+
+    & $section 'General' @('System', 'Bios', 'Windows') {
+        $bios = & $first 'Bios'
+        $os = & $first 'Windows'
+        $osName = if ($os -and $os.Caption) { "$($os.Caption)" -replace '^Microsoft\s+', '' } else { $na }
+        $build = if ($os) { [int]"$($os.BuildNumber)" } else { 0 }
+        $buildText = if ($os -and $os.BuildNumber) { "$($os.Version) (build $($os.BuildNumber))" } else { $na }
+        $release = Get-WindowsRelease $build $osName
+        if ($release -and -not $release.End) { $buildText += "`n$($release.Note)" }
+        $biosText = $na
+        if ($bios) {
+            $version = Get-CleanValue $bios.SMBIOSBIOSVersion
+            $biosText = if ($bios.ReleaseDate -is [datetime]) { '{0} ({1})' -f $version, (Format-TextDate $bios.ReleaseDate -Day) } else { $version }
+        }
+        $user = if ($system -and $system.UserName) { "$($system.UserName)" } else { Tr 'Aucun au dernier inventaire' }
+        [pscustomobject]@{
+            ComputerName = if ($system -and $system.Name) { "$($system.Name)" } else { $Query }
+            LoggedOnUser = $user
+            Bios         = $biosText
+            LastBoot     = if ($os -and $os.LastBootUpTime -is [datetime]) { Format-TextDate $os.LastBootUpTime } else { $na }
+            UptimeDays   = $null
+            Build        = $build
+            SerialNumber = if ($bios) { Get-CleanValue $bios.SerialNumber } else { $na }
+            OSType       = if ($os -and $os.OSArchitecture) { "Windows $($os.OSArchitecture)" } else { $na }
+            SKU          = $na
+            OSName       = $osName
+            BuildNumber  = $buildText
+            Manufacturer = if ($system) { Get-CleanValue $system.Manufacturer } else { $na }
+            Model        = if ($system) { Get-CleanValue $system.Model } else { $na }
+            # SCCM's inventory doesn't say by default whether it's a laptop.
+            Mobile       = $null
+        }
+    }
+
+    & $section 'Network' @('Network') {
+        $ipv4 = '^\d{1,3}(\.\d{1,3}){3}$'
+        $enabled = { param($row) "$($row.IPEnabled)" -in '1', 'True' }
+        $addresses = { param($row) @(Get-SccmSpecText $row.IPAddress | Where-Object { $_ -match $ipv4 -and $_ -notlike '169.254.*' }) }
+        $configs = @(Get-SccmSpecRow $inventory 'Network' | Where-Object { (& $enabled $_) -and @(& $addresses $_).Count })
+        # The main adapter: the one with a default gateway, then the first.
+        $ranked = @($configs | Sort-Object @{ Expression = { -not @(Get-SccmSpecText $_.DefaultIPGateway).Count } }, @{ Expression = { [int]"$($_.Index)" } })
+        $primary = $ranked | Select-Object -First 1
+        $lines = foreach ($config in $ranked) {
+            $ips = (& $addresses $config) -join ', '
+            if ($config -eq $primary) { $ips } else { "$ips ($($config.Description))" }
+        }
+        $domain = if ($system -and $system.Domain) { "$($system.Domain)" }
+        [pscustomobject]@{
+            IPAddress = if ($lines) { @($lines) -join "`n" } else { $na }
+            Adapter   = if ($primary -and $primary.Description) { "$($primary.Description)" } else { $na }
+            LinkType  = $na
+            MAC       = if ($primary -and $primary.MACAddress) { "$($primary.MACAddress)" } else { $na }
+            DNS       = if ($primary) { Join-Unique @(Get-SccmSpecText $primary.DNSServerSearchOrder) "`n" } else { $na }
+            FQDN      = if ($system -and $system.Name -and $domain) { "$($system.Name).$domain" } else { $na }
+            Domain    = if ($domain) { $domain } else { $na }
+        }
+    }
+
+    & $section 'Processor' @('Processor') {
+        $cpus = @(Get-SccmSpecRow $inventory 'Processor')
+        $first = $cpus[0]
+        $cores = ($cpus | ForEach-Object { [int]"$($_.NumberOfCores)" } | Measure-Object -Sum).Sum
+        $threads = ($cpus | ForEach-Object { [int]"$($_.NumberOfLogicalProcessors)" } | Measure-Object -Sum).Sum
+        $clock = [int]"$($first.MaxClockSpeed)"
+        $architecture = switch ("$($first.Architecture)") { '0' { 'x86' } '5' { 'ARM' } '9' { 'x64' } '12' { 'ARM64' } default { $na } }
+        # A site's PROCESSOR class may not have Architecture (Read-SccmRow then gives $null), only AddressWidth: the
+        # computer's SystemType (« ARM64-based PC ») tells ARM apart.
+        $value = { param($Row, [string]$Name) if ($Row) { $property = $Row.PSObject.Properties[$Name]; if ($property) { "$($property.Value)" } } }
+        $width = & $value $first 'AddressWidth'
+        if ($architecture -eq $na -and $width -in '32', '64') {
+            $arm = (& $value $system 'SystemType') -match '^ARM'
+            $architecture = if ($width -eq '64') { if ($arm) { 'ARM64' } else { 'x64' } } elseif ($arm) { 'ARM' } else { 'x86' }
+        }
+        $model = Format-PCCpuName "$($first.Name)" ([bool]$clock)
+        [pscustomobject]@{
+            Name         = $model
+            Vendor       = Get-PCCpuVendor $first.Manufacturer $model
+            Architecture = $architecture
+            Cores        = "$cores / $threads"
+            BaseClock    = if ($clock) { '{0:N2} GHz' -f ($clock / 1000) } else { $na }
+            L3Cache      = $na
+            Extra        = if ($cpus.Count -gt 1) { (Tr 'Sockets : {0}') -f $cpus.Count }
+        }
+    }
+
+    # The modules (PHYSICAL_MEMORY) only when the site collects them: their absence is no error.
+    & $section 'Memory' @('Memory') {
+        $total = (& $first 'Memory').TotalPhysicalMemory
+        # SCCM gives the total in KB, each module's capacity in MB.
+        $modules = @(Get-SccmSpecRow $inventory 'Module')
+        $typeNames = @{ 20 = 'DDR'; 21 = 'DDR2'; 24 = 'DDR3'; 26 = 'DDR4' }
+        $types = $modules | ForEach-Object { $type = [int]"$($_.MemoryType)"; if ($typeNames.ContainsKey($type)) { $typeNames[$type] } }
+        $speeds = $modules | ForEach-Object { $_.Speed } | Where-Object { $_ }
+        $made = ConvertTo-PCMemory $modules
+        [pscustomobject]@{
+            Total    = if ($total) { Format-Byte ([double]$total * 1KB) } else { $na }
+            Speed    = if ($speeds) { "$(Join-Unique $speeds ' / ') MT/s" } else { $na }
+            Type     = Join-Unique $types
+            Physical = if ($modules.Count) { ($modules | Group-Object { [double]"$($_.Capacity)" } | ForEach-Object { "$($_.Count) × $(Format-Byte ([double]$_.Name * 1MB))" }) -join ' + ' } else { $na }
+            Maker    = $made.Maker
+            Part     = $made.Part
+        }
+    }
+
+    & $section 'Disk' @('Disk', 'Volume') {
+        # Sizes in MB. SCCM doesn't say which volume is on which disk: on the disk when there's only one, else apart.
+        $volumes = @(Get-SccmSpecRow $inventory 'Volume' | Where-Object { "$($_.DriveType)" -eq '3' } | Sort-Object { "$($_.DeviceID)" } | ForEach-Object {
+            $size = [double]"$($_.Size)" * 1MB
+            $free = [double]"$($_.FreeSpace)" * 1MB
+            $percent = if ($size -gt 0) { [math]::Round((($size - $free) / $size) * 100) } else { 0 }
+            [pscustomobject]@{
+                Drive = "$($_.DeviceID)"; Label = "$($_.VolumeName)"; IsSystem = $false; Size = $size; Free = $free; UsedPercent = $percent
+                Text  = (Tr '{0} / {1} · {2} libres ({3} %)') -f (Format-Byte ($size - $free)), (Format-Byte $size), (Format-Byte $free), $percent
+            }
+        })
+        $disks = @(Get-SccmSpecRow $inventory 'Disk' | Sort-Object { [int]"$($_.Index)" })
+        $apart = $disks.Count -ne 1
+        $drives = @(foreach ($disk in $disks) {
+                $size = [double]"$($disk.Size)" * 1MB
+                [pscustomobject]@{
+                    Number = "$($disk.Index)"; Model = "$($disk.Model)".Trim(); Size = $size; Tech = Get-CleanValue $disk.InterfaceType
+                    Volumes = $(if ($apart) { @() } else { $volumes }); IsSystem = $false; SizeText = Format-Byte $size; VolumesApart = $apart
+                }
+            })
+        if ($apart -and $volumes.Count) {
+            $drives += [pscustomobject]@{ Number = ''; Model = 'Volumes'; Size = 0; Tech = ''; Volumes = $volumes; IsSystem = $false; SizeText = ''; VolumesApart = $false }
+        }
+        $size = ($volumes | Measure-Object Size -Sum).Sum
+        $free = ($volumes | Measure-Object Free -Sum).Sum
+        $details = foreach ($drive in $drives) {
+            $head = if ($drive.SizeText) { "$($drive.Model) — $($drive.SizeText)" } else { $drive.Model }
+            if ($drive.Tech -and $drive.Tech -ne $na) { $head += " ($($drive.Tech))" }
+            $head
+            foreach ($volume in $drive.Volumes) { "  $($volume.Drive) $($volume.Text)" }
+        }
+        [pscustomobject]@{
+            Drives    = $drives
+            DiskCount = @($drives | Where-Object Number).Count
+            Storage   = if ($size -gt 0) { (Tr '{0} (utilisé {1} / libre {2})') -f (Format-Byte $size), (Format-Byte ($size - $free)), (Format-Byte $free) } else { $na }
+            Details   = $details -join "`n"
+        }
+    }
+
+    & $section 'Software' @('Program', 'Program64') {
+        $entries = foreach ($row in @(Get-SccmSpecRow $inventory 'Program') + @(Get-SccmSpecRow $inventory 'Program64')) {
+            [pscustomobject]@{ Scope = 'Computer'; DisplayName = "$($row.DisplayName)"; DisplayVersion = "$($row.Version)"; Publisher = "$($row.Publisher)"; InstallDate = "$($row.InstallDate)"; SystemComponent = $null; ParentKeyName = $null }
+        }
+        ConvertTo-PCSoftware $entries
+    }
+
+    $specs = [pscustomobject]$result
+    $date = if ($specs.ScanDate) { Format-TextDate $specs.ScanDate -Day }
+    $specs.Alerts = @(Get-PCSpecAlert $specs | ForEach-Object {
+            if ($date) { $_.Message = '{0} {1}' -f $_.Message, ((Tr '(inventaire du {0})') -f $date) }
+            $_
+        })
+    $specs
+}
+
+function Get-SccmRecordNote($Specs) {
+    # What the window and the report say of the record read, when it may not be this computer's: several records (the
+    # latest, or the latest with an inventory), or one Repère isn't sure of. Nothing otherwise.
+    $more = { param($name) if ($Specs.PSObject.Properties[$name]) { $Specs.$name } }
+    if ($Specs.Candidates -gt 1) {
+        if ((& $more 'Latest') -eq $false) {
+            # The latest unread isn't known empty: it may well be the one with the inventory.
+            if ((& $more 'LatestSkipped') -eq 'Unread') { return (Tr 'SCCM a {0} fiches qui peuvent être cet ordinateur : la plus récente n''a pas pu être lue, voici la suivante qui a un inventaire.') -f $Specs.Candidates }
+            return (Tr 'SCCM a {0} fiches qui peuvent être cet ordinateur : voici la plus récente qui a un inventaire.') -f $Specs.Candidates
+        }
+        return (Tr 'SCCM a {0} fiches qui peuvent être cet ordinateur : voici la plus récente.') -f $Specs.Candidates
+    }
+    if (& $more 'Doubtful') { Tr "Repère n'est pas sûr que cette fiche SCCM soit celle de cet ordinateur." }
+}
+
+function Get-SccmScanAge($ScanDate, [int]$Days, [datetime]$Now = (Get-Date)) {
+    # How old an inventory is, as Caractéristiques says it: Level info, warn once two inventories are missed (2 × $Days,
+    # how often the site inventories computers), crit after four or when SCCM doesn't say when; and Text, « il y a 6
+    # jours ».
+    if ($Days -lt 1) { $Days = 7 }
+    if ($ScanDate -isnot [datetime]) { return @{ Level = 'crit'; Days = $null; Text = '' } }
+    $age = [int][math]::Floor(($Now - $ScanDate).TotalDays)
+    if ($age -lt 0) { $age = 0 }
+    $level = if ($age -gt 4 * $Days) { 'crit' } elseif ($age -gt 2 * $Days) { 'warn' } else { 'info' }
+    $text = switch ($age) { 0 { Tr "aujourd'hui" } 1 { Tr 'hier' } default { (Tr 'il y a {0} jours') -f $age } }
+    @{ Level = $level; Days = $age; Text = $text }
+}
+
+function Get-PCSpecSource($Specs) {
+    # Where a reading comes from (Live or SCCM), Live for one made before Repère said: an export read back, a test's.
+    $source = if ($Specs -is [System.Collections.IDictionary]) { $Specs['Source'] } elseif ($Specs) { $property = $Specs.PSObject.Properties['Source']; if ($property) { $property.Value } }
+    if ($source) { [string]$source } else { 'Live' }
+}
+
 # Each Windows build's release and end of servicing (Home and Pro, then Enterprise and Education), from
 # learn.microsoft.com/windows/release-health: to update when new versions ship (tools\New-RepereRelease.ps1 warns when
 # the newest's end of support for Pro is less than a year away, a sign that a newer release is missing). Used by the
@@ -1091,12 +1353,34 @@ $script:SpecsOptionalFields = @{
     Memory    = 'Maker', 'Part'
 }
 
+function Get-PCSpecLabel([string]$Section, [string]$Field, [bool]$Sccm) {
+    # A field's label: SpecsSections', except the user an SCCM inventory names, who was signed in when it was made.
+    if ($Sccm -and $Section -eq 'General' -and $Field -eq 'LoggedOnUser') { return Tr 'Dernier utilisateur' }
+    $script:SpecsSections[$Section].Fields[$Field]
+}
+
 function Format-PCSpecReport($Specs, [string]$Section) {
     # The specs as text, to copy or export, with the sections the window shows, in its order (Test-PCSpecSectionShown).
     # -Section: only that section (General, Network…).
     $text = [System.Text.StringBuilder]::new()
     $name = if ($Specs.General -and $Specs.General.ComputerName) { $Specs.General.ComputerName } else { $Specs.Query }
-    $null = $text.AppendLine(((Tr 'Caractéristiques de {0} — {1}') -f $name, (Format-TextDate $Specs.Timestamp)))
+    $sccm = (Get-PCSpecSource $Specs) -eq 'SCCM'
+    if ($sccm) {
+        # From SCCM: its inventory's date first (or why there's none), then when Repère read it, whether the record may
+        # be another computer's, and what that inventory doesn't have.
+        $read = Format-TextDate $Specs.Timestamp
+        if ($Specs.ScanDate) { $null = $text.AppendLine(((Tr 'Caractéristiques de {0} — inventaire SCCM du {1}, lu le {2}') -f $name, (Format-TextDate $Specs.ScanDate -Day), $read)) }
+        else {
+            $null = $text.AppendLine(((Tr 'Caractéristiques de {0} — inventaire SCCM sans date, lu le {1}') -f $name, $read))
+            $failure = if ($Specs.PSObject.Properties['ScanFailure']) { $Specs.ScanFailure }
+            $null = $text.AppendLine($(if ($failure) { (Tr "La date de l'inventaire n'a pas été lue : {0}.") -f $failure } else { Tr "SCCM ne dit pas quand il l'a fait." }))
+        }
+        $record = Get-SccmRecordNote $Specs
+        if ($record) { $null = $text.AppendLine($record) }
+        $missing = @($Specs.Missing | Where-Object { -not $Section -or $_ -eq $Section } | ForEach-Object { $script:SpecsSections[$_].Title })
+        if ($missing.Count) { $null = $text.AppendLine(((Tr "Pas dans l'inventaire SCCM : {0}.") -f ($missing -join ', '))) }
+    }
+    else { $null = $text.AppendLine(((Tr 'Caractéristiques de {0} — {1}') -f $name, (Format-TextDate $Specs.Timestamp))) }
     $keys = if ($Section) { @($Section) } else { @($script:SpecsSections.Keys) }
     # « Label : value », with no padding to line the values up: pasted where the font is proportional (Teams, Outlook,
     # a ticket), padded columns no longer line up (#315). A value on several lines starts under its label, indented.
@@ -1107,12 +1391,13 @@ function Format-PCSpecReport($Specs, [string]$Section) {
         $null = $text.AppendLine().AppendLine("[$($script:SpecsSections[$key].Title)]")
         foreach ($field in $script:SpecsSections[$key].Fields.GetEnumerator()) {
             if ($field.Key -in $script:SpecsOptionalFields[$key] -and -not "$($data.($field.Key))") { continue }
+            $label = Get-PCSpecLabel $key $field.Key $sccm
             $lines = @("$($data.($field.Key))" -split "`r?`n")
             if ($lines.Count -gt 1) {
-                $null = $text.AppendLine('  ' + ((Tr '{0} : {1}') -f $field.Value, '').TrimEnd())
+                $null = $text.AppendLine('  ' + ((Tr '{0} : {1}') -f $label, '').TrimEnd())
                 foreach ($line in $lines) { $null = $text.AppendLine("    $line") }
             }
-            else { $null = $text.AppendLine('  ' + ((Tr '{0} : {1}') -f $field.Value, $lines[0])) }
+            else { $null = $text.AppendLine('  ' + ((Tr '{0} : {1}') -f $label, $lines[0])) }
         }
     }
     $alerts = @($Specs.Alerts | Where-Object { $_ -and (-not $Section -or $_.Section -eq $Section) })

@@ -1,5 +1,6 @@
 ﻿# The Caractéristiques window: a computer's hardware, Windows and network, read over CIM (PCSpecs.ps1) in a background
-# runspace and shown section by section as they arrive. Opened from the results, one window per computer: several can
+# runspace and shown section by section as they arrive. When the computer can't be read and a site is set in Paramètres
+# › SCCM, SCCM's inventory instead (ConvertFrom-SccmInventory), under a banner that says so and how old it is. Opened from the results, one window per computer: several can
 # stay open side by side, and opening one again brings it to the front. Dot-sourced by the main script, after
 # Theme.ps1 (styles and icons).
 #
@@ -50,7 +51,7 @@ function ConvertTo-XamlText([string]$Text) {
 function Get-SpecsFieldXaml([string]$Section, [string]$Field) {
     # A label and its value, in a read-only text box so it can be selected and copied.
     $label = ConvertTo-XamlText $script:SpecsSections[$Section].Fields[$Field]
-    "<StackPanel Margin=`"0,0,18,14`"><TextBlock Style=`"{StaticResource Spec.Label}`" Text=`"$label`"/>" +
+    "<StackPanel Margin=`"0,0,18,14`"><TextBlock x:Name=`"label_$($Section)_$Field`" Style=`"{StaticResource Spec.Label}`" Text=`"$label`"/>" +
     "<TextBox x:Name=`"spec_$($Section)_$Field`" Style=`"{StaticResource Spec.Value}`" AutomationProperties.Name=`"$label`" Text=`"…`"/></StackPanel>"
 }
 
@@ -189,6 +190,12 @@ function Get-SpecsWindowXaml {
       </StackPanel>
     </Grid>
 
+    <!-- Where the values come from when it isn't the computer: SCCM's inventory, its date, in amber then red as it
+         ages (Show-SpecsSource). Above the sections: it's what they all are. -->
+    <Border x:Name="spec_source" DockPanel.Dock="Top" Visibility="Collapsed" BorderThickness="1" CornerRadius="8" Padding="14,10" Margin="16,0,16,10">
+      <TextBox x:Name="spec_source_text" Style="{StaticResource Spec.Banner}"/>
+    </Border>
+
     <!-- The banners, known once the reading ends: under the sections, so the view only gets shorter from below and
          nothing being read moves; and always in sight while scrolling. -->
     <StackPanel DockPanel.Dock="Bottom" Margin="16,0,16,0">
@@ -287,7 +294,9 @@ function Show-SpecsDisk($State, $Disk, $Alerts) {
 </Grid>
 "@
         }
-        if (-not $rows) { $rows = "<TextBlock Style=`"{StaticResource Txt.Muted}`" Margin=`"0,8,0,0`" Text=`"$(ConvertTo-XamlText (Tr 'Aucun volume monté'))`"/>" }
+        # A disk of SCCM's, whose volumes are listed apart (it doesn't say which is on which), says none.
+        $apart = $drive.PSObject.Properties['VolumesApart'] -and $drive.VolumesApart
+        if (-not $rows -and -not $apart) { $rows = "<TextBlock Style=`"{StaticResource Txt.Muted}`" Margin=`"0,8,0,0`" Text=`"$(ConvertTo-XamlText (Tr 'Aucun volume monté'))`"/>" }
         $size = if ($drive.SizeText) { "<TextBlock Style=`"{StaticResource Txt.Muted}`" Margin=`"8,0,0,0`" VerticalAlignment=`"Center`" Text=`"$(ConvertTo-XamlText $drive.SizeText)`"/>" }
         $xaml = @"
 <StackPanel xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation" xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml" Margin="0,0,0,14">
@@ -390,21 +399,22 @@ function Set-SpecsSection($State, [string]$Key, $Data, $Alerts) {
 
 function Update-SpecsOptionalCard($State) {
     # Batterie and Station d'accueil: shown for a laptop, else only once read and when there's one
-    # (Test-PCSpecSectionShown), so a desktop's never appears to go again.
+    # (Test-PCSpecSectionShown), so a desktop's never appears to go again. Never from SCCM, whose inventory has neither.
     foreach ($key in 'Battery', 'Dock') {
-        $shown = Test-PCSpecSectionShown $key $State.Read[$key] $State.Mobile $State.Read.ContainsKey($key)
+        $shown = $State.Source -ne 'SCCM' -and (Test-PCSpecSectionShown $key $State.Read[$key] $State.Mobile $State.Read.ContainsKey($key))
         $State.Controls["card_$key"].Visibility = ConvertTo-Visibility $shown
     }
 }
 
 function Update-SpecsSectionHeader($State, [string]$Key) {
-    # Open: the chevron points down. Closed: it points right, and the summary follows the title.
+    # Open: the chevron points down. Closed: it points right, and the summary follows the title. A section SCCM's
+    # inventory doesn't have (Missing) says so open too: its values alone are « — », with nothing to say why.
     $expanded = $State.Expanded[$Key]
     $State.Controls["body_$Key"].Visibility = ConvertTo-Visibility $expanded
     $State.Controls["chevron_$Key"].RenderTransform.Angle = if ($expanded) { 0 } else { -90 }
     $summary = $State.Controls["summary_$Key"]
     $summary.Text = $State.Summaries[$Key]
-    $summary.Visibility = ConvertTo-Visibility (-not $expanded -and $summary.Text)
+    $summary.Visibility = ConvertTo-Visibility ((-not $expanded -or $Key -in @($State.Missing)) -and $summary.Text)
 }
 
 function Set-SpecsBusy($State, [bool]$Busy) {
@@ -446,14 +456,63 @@ function Update-SpecsAlertBanner($State) {
 }
 
 function Show-SpecsReading($State, $Specs) {
-    # A complete reading: every section with its alerts, the banners and the header.
+    # A complete reading: every section with its alerts, the banners and the header. From SCCM, the sections its
+    # inventory doesn't have say so, and the banner where it comes from.
     $alerts = @($Specs.Alerts | Where-Object { $_ })
+    $sccm = (Get-PCSpecSource $Specs) -eq 'SCCM'
+    $State.Source = if ($sccm) { 'SCCM' } else { 'Live' }
+    $State.Missing = if ($sccm) { @($Specs.Missing) } else { @() }
     Set-SpecsView $State $false
     foreach ($key in $script:SpecsSections.Keys) { Set-SpecsSection $State $key $Specs.$key $alerts }
+    if ($sccm) {
+        foreach ($key in @($Specs.Missing)) {
+            $State.Summaries[$key] = Tr "Pas dans l'inventaire SCCM"
+            Update-SpecsSectionHeader $State $key
+        }
+    }
+    $State.Controls['label_General_LoggedOnUser'].Text = Get-PCSpecLabel 'General' 'LoggedOnUser' $sccm
     $sorted = @($alerts | Where-Object Level -eq 'crit') + @($alerts | Where-Object Level -ne 'crit')
     Show-SpecsBanner $State 'alert' @($sorted | ForEach-Object { "$(if ($_.Level -eq 'crit') { '⛔' } else { '⚠' })  $($_.Message)" })
     Show-SpecsBanner $State 'error' @($Specs.Errors.GetEnumerator() | ForEach-Object { (Tr '{0} non lu : {1}') -f $script:SpecsSections[$_.Key].Title, $_.Value })
-    Set-SpecsSubtitle $State ((Tr 'lu le {0}') -f (Format-TextDate $Specs.Timestamp))
+    Show-SpecsSource $State $Specs
+    $when = if (-not $sccm) { (Tr 'lu le {0}') -f (Format-TextDate $Specs.Timestamp) }
+            elseif ($Specs.ScanDate) { (Tr 'inventaire SCCM du {0}') -f (Format-TextDate $Specs.ScanDate -Day) }
+            else { Tr 'inventaire SCCM' }
+    Set-SpecsSubtitle $State $when
+}
+
+function Show-SpecsSource($State, $Specs) {
+    # The banner of a reading from SCCM: why the computer wasn't read, the inventory's date and age, in the colors of
+    # how old it is (Get-SccmScanAge, from how often the site inventories computers), and the records it may be. None
+    # for a live reading.
+    $banner = $State.Controls['spec_source']
+    if ((Get-PCSpecSource $Specs) -ne 'SCCM') { $banner.Visibility = 'Collapsed'; $State.SourceLevel = ''; return }
+    $site = Read-SccmSetting
+    $days = if ($site) { $site.InventoryDays } else { $script:SccmInventoryDays }
+    $age = Get-SccmScanAge $Specs.ScanDate $days
+    # Read by name: a reading made before they were (an export read back) has neither.
+    $more = { param($name) $property = $Specs.PSObject.Properties[$name]; if ($property) { $property.Value } }
+    $scanFailure = [string](& $more 'ScanFailure')
+    $lines = @(
+        if ($State.SccmWhy) { '{0} {1}.' -f $State.Computer.ComputerName, $State.SccmWhy }
+        if ($Specs.ScanDate) { (Tr 'Voici son inventaire SCCM du {0}, {1} : ses valeurs sont celles de ce jour-là.') -f (Format-TextDate $Specs.ScanDate -Day), $age.Text }
+        elseif ($scanFailure) { (Tr "Voici son inventaire SCCM, sans date : sa date n'a pas été lue ({0}).") -f $scanFailure }
+        else { Tr "Voici son inventaire SCCM, sans date : SCCM ne dit pas quand il l'a fait." }
+        if ($Specs.ScanDate -and $age.Level -ne 'info') { (Tr 'Il est ancien : le site inventorie les ordinateurs tous les {0} jours.') -f $days }
+        Get-SccmRecordNote $Specs
+        Tr "Actualiser (F5) essaie d'abord l'ordinateur."
+    )
+    $colors = switch ($age.Level) {
+        'crit' { 'R.DangerBg', 'R.DangerBorder', 'R.DangerText' }
+        'warn' { 'R.WarnBg', 'R.WarnBorder', 'R.WarnText' }
+        default { 'R.Selection', 'R.Border', 'R.Text' }
+    }
+    $banner.SetResourceReference([System.Windows.Controls.Border]::BackgroundProperty, $colors[0])
+    $banner.SetResourceReference([System.Windows.Controls.Border]::BorderBrushProperty, $colors[1])
+    $State.Controls['spec_source_text'].SetResourceReference([System.Windows.Controls.Control]::ForegroundProperty, $colors[2])
+    $State.Controls['spec_source_text'].Text = $lines -join ' '
+    $State.SourceLevel = $age.Level
+    $banner.Visibility = 'Visible'
 }
 
 function Set-SpecsSubtitle($State, [string]$When) {
@@ -465,8 +524,13 @@ function Set-SpecsSubtitle($State, [string]$When) {
 }
 
 function Show-SpecsFailure($State, [string]$Message) {
-    # The computer couldn't be read: no sections, the error, and what to check.
+    # The computer couldn't be read: no sections, the error, and what to check. Neither SCCM's banner nor what its
+    # reading set, as Clear-SpecsReading: an inventory may have been shown halfway before an error.
     $State.Last = $null
+    $State.Source = 'Live'
+    $State.Missing = @()
+    $State.Controls['spec_source'].Visibility = 'Collapsed'
+    $State.SourceLevel = ''
     Set-SpecsView $State $true
     Show-SpecsBanner $State 'alert' @()
     Show-SpecsBanner $State 'error' @(ConvertTo-FrenchError $Message)
@@ -495,7 +559,18 @@ function Start-SpecsReading($State) {
         LanguageScript = $script:LanguageScript
     })
     $State.Job = @{ Shell = $shell; Handle = $shell.BeginInvoke(); Queue = $queue; Watch = [System.Diagnostics.Stopwatch]::StartNew(); Read = 0 }
+    Clear-SpecsReading $State ((Tr 'Connexion à {0}…') -f $State.Computer.HostName)
+    $State.Timer.Start()
+}
 
+function Clear-SpecsReading($State, [string]$Status) {
+    # Before a reading: the sections empty ('…'), no banner, the live user's label, and $Status said; Annuler instead
+    # of Actualiser. The subtitle's « inventaire SCCM du… » goes with the inventory; a live reading's date stays until
+    # the next.
+    if ($State.Source -eq 'SCCM') { Set-SpecsSubtitle $State '' }
+    $State.Source = 'Live'
+    $State.Missing = @()
+    $State.Controls['label_General_LoggedOnUser'].Text = Get-PCSpecLabel 'General' 'LoggedOnUser' $false
     Set-SpecsView $State $false
     Show-SpecsBanner $State 'error' @()
     Show-SpecsBanner $State 'alert' @()
@@ -514,10 +589,92 @@ function Start-SpecsReading($State) {
     $State.Mobile = $null
     $State.Read = @{}
     Update-SpecsOptionalCard $State
-    $State.Controls['spec_status'].Text = (Tr 'Connexion à {0}…') -f $State.Computer.HostName
+    $State.Controls['spec_source'].Visibility = 'Collapsed'
+    $State.SourceLevel = ''
+    $State.Controls['spec_status'].Text = $Status
     $State.Controls['spec_status'].ToolTip = $null
     Set-SpecsBusy $State $true
-    $State.Timer.Start()
+}
+
+function Start-SpecsSccmReading($State, [string]$Why, [switch]$Chosen) {
+    # SCCM's inventory of the computer, which couldn't be read ($Why, how the banner says it: « ne répond pas »), on a
+    # search runspace (Get-SccmSpec). Annuler or a closed window stop it (Stop-SpecsReading) and drop its answer. No
+    # SID: the results don't read it, and Select-SccmDevice does without. -Chosen: the user asked for it (Lire depuis
+    # SCCM), which SccmChosen keeps; read by itself, only an inventory shown sets it, and Annuler puts back what it was
+    # (Chosen, in the read's context).
+    $site = Read-SccmSetting
+    $State.SccmWhy = $Why
+    if ($Chosen) { $State.SccmChosen = $true }
+    $context = @{ State = $State; Watch = [System.Diagnostics.Stopwatch]::StartNew(); Chosen = $State.SccmChosen }
+    $State.SccmRead = $context
+    Clear-SpecsReading $State (Tr "Lecture de l'inventaire SCCM…")
+    if (-not $site) {
+        $State.SccmRead = $null
+        Complete-SpecsSccmReading $State $null (Tr "aucun site n'est indiqué dans Paramètres › SCCM")
+        return
+    }
+    try {
+        Start-BackgroundRead -Command 'Get-SccmSpec' -Arguments @($site, $State.Computer.ComputerName, $State.Computer.Domain) `
+            -Functions (Get-SccmReadFunction) -Variables (Get-SccmReadVariable) -Timeout (Get-SccmReadTimeout) -Context $context -OnDone {
+            param($context, $read, $problem)
+            Start-SccmStopSweep
+            $state = $context.State
+            if ($state.Closed -or -not [object]::ReferenceEquals($state.SccmRead, $context)) { return }
+            $state.SccmRead = $null
+            $context.Watch.Stop()
+            Complete-SpecsSccmReading $state $read $problem $context.Watch.Elapsed.TotalSeconds
+        }
+    }
+    catch {
+        # Not started: said as SCCM's failure, rather than Annuler left up with nothing to cancel.
+        $State.SccmRead = $null
+        Complete-SpecsSccmReading $State $null $_.Exception.Message
+    }
+}
+
+function Complete-SpecsSccmReading($State, $Read, [string]$Problem, [double]$Seconds = -1) {
+    # Show-SpecsSccmReading, whose error is the reading's failure: the window isn't left busy, Annuler doing nothing.
+    # Why the computer itself wasn't read comes first, as when SCCM has nothing.
+    try { Show-SpecsSccmReading $State $Read $Problem $Seconds }
+    catch {
+        $message = (Tr 'Erreur inattendue : {0}') -f $_.Exception.Message
+        try {
+            Show-SpecsFailure $State ((@($State.SccmFailure, $message) | Where-Object { $_ }) -join "`n")
+            $State.Controls['spec_status'].Text = Tr 'Échec de la lecture.'
+            $State.Controls['spec_status'].ToolTip = $null
+        }
+        finally { Set-SpecsBusy $State $false }
+    }
+}
+
+function Show-SpecsSccmReading($State, $Read, [string]$Problem, [double]$Seconds = -1) {
+    # SCCM's answer (Get-SccmSpec'), or $Problem: its inventory shown, or, when it has nothing of the computer
+    # (NotFound, or NoInventory, its record without one) or couldn't say, the failure, with why the computer itself
+    # wasn't read (SccmFailure) and why SCCM's inventory isn't shown either.
+    $answer = if ($Problem -or -not $Read) { 'NotChecked' } else { [string]$Read.Answer }
+    if ($answer -in 'NotFound', 'NoInventory', 'NotChecked' -or -not $Read.Inventory) {
+        $reason = if ($Problem) { ConvertTo-FrenchError $Problem } elseif ($Read -and $Read.Reason) { [string]$Read.Reason } else { Tr "sa réponse n'est pas lisible" }
+        $sccm = if ($answer -eq 'NotFound') { Tr 'Introuvable dans SCCM (avec vos accès).' }
+                elseif ($answer -eq 'NoInventory') { "$reason." }
+                else { (Tr 'Vérification SCCM impossible : {0}.') -f $reason }
+        Show-SpecsFailure $State ((@($State.SccmFailure, $sccm) | Where-Object { $_ }) -join "`n")
+        $State.Controls['spec_status'].Text = Tr 'Échec de la lecture.'
+        $State.Controls['spec_status'].ToolTip = $null
+        Set-SpecsBusy $State $false
+        return
+    }
+    $specs = ConvertFrom-SccmInventory $Read $State.Computer.ComputerName
+    $State.Last = $specs
+    Show-SpecsReading $State $specs
+    $notes = @(if ($Seconds -ge 0) { (Tr 'Inventaire SCCM lu en {0} s') -f $Seconds.ToString('0.0', (Get-TextCulture)) } else { Tr 'Inventaire SCCM' })
+    $alertCount = @($specs.Alerts | Where-Object { $_ }).Count
+    if ($alertCount) { $notes += if ($alertCount -eq 1) { Tr '1 alerte' } else { (Tr '{0} alertes') -f $alertCount } }
+    if ($specs.Errors.Count) { $notes += if ($specs.Errors.Count -eq 1) { Tr '1 section non lue' } else { (Tr '{0} sections non lues') -f $specs.Errors.Count } }
+    $State.Controls['spec_status'].Text = $notes -join ' · '
+    $State.Controls['spec_status'].ToolTip = $null
+    # What the window shows, once it's all shown: F5 comes back to it whatever keeps the computer from being read.
+    $State.SccmChosen = $true
+    Set-SpecsBusy $State $false
 }
 
 function Show-SpecsProgress($State, $Item) {
@@ -539,6 +696,19 @@ function Update-SpecsReading($State) {
     if (-not $job.Handle.IsCompleted) { return }
     while ($job.Queue.TryDequeue([ref]$item)) { Show-SpecsProgress $State $item }
     Complete-SpecsReading $State
+}
+
+function Get-SpecsReadWhy([string]$Message) {
+    # Why the window's reading didn't reach the computer ($Message: Get-PCSpec's Connexion error, in the window's
+    # language), in Get-SpecsCheckWhy's words for the banner over SCCM's inventory, and whether the computer answered
+    # (Reached): not when it isn't in the DNS, or when neither ping nor CIM did. Access denied by its text, as
+    # Get-SpecsCheckWarning reads it (è and é escaped: it's no text to show): the errors themselves stay in the
+    # reading's runspace. First, as a computer whose ping is blocked can still refuse.
+    $dns = @((Tr "nom '{0}' introuvable dans le DNS.") -split '\{0\}' | ForEach-Object { [regex]::Escape($_) }) -join '.*'
+    if ($Message -match $dns) { return @{ Why = Tr "n'est pas dans le DNS"; Reached = $false } }
+    if ($Message -match 'Acc\xe8s refus\xe9|Access is denied|0x80070005') { return @{ Why = Tr 'ne peut pas être lu : accès refusé'; Reached = $true } }
+    if ($Message.Contains((Tr "l'ordinateur semble hors ligne (pas de réponse au ping). ").Trim())) { return @{ Why = Tr 'ne répond pas (ni au ping, ni à WinRM, ni à DCOM)'; Reached = $false } }
+    @{ Why = Tr 'ne peut pas être lu'; Reached = $true }
 }
 
 function Format-SpecsTiming($Specs) {
@@ -578,6 +748,15 @@ function Complete-SpecsReading($State) {
 
     if (-not $specs -or -not $specs.Reachable) {
         $message = if ($specs) { $specs.Errors['Connexion'] } elseif ($failure) { (Tr 'Erreur inattendue : {0}') -f $failure } else { Tr 'Erreur inattendue.' }
+        # SCCM's inventory, when a site is set, as Start-SpecsCheck reads it: by itself when the computer didn't answer
+        # at all; reached but unreadable, only in a window SCCM was chosen for (Lire depuis SCCM) or shows since it last
+        # read the computer (SccmChosen; elsewhere, the failure says what to fix). Its failure says this one too.
+        $why = if ($specs) { Get-SpecsReadWhy $message }
+        if ($why -and (-not $why.Reached -or $State.SccmChosen) -and (Read-SccmSetting)) {
+            $State.SccmFailure = $message
+            Start-SpecsSccmReading $State $why.Why
+            return
+        }
         Show-SpecsFailure $State $message
         $State.Controls['spec_status'].Text = Tr 'Échec de la lecture.'
         $State.Controls['spec_status'].ToolTip = if ($specs) { Format-SpecsTiming $specs } else { $null }
@@ -586,6 +765,7 @@ function Complete-SpecsReading($State) {
     }
 
     $State.Last = $specs
+    $State.SccmChosen = $false
     Show-SpecsReading $State $specs
     $notes = @(((Tr 'Lu en {0} s') -f $job.Watch.Elapsed.TotalSeconds.ToString('0.0', (Get-TextCulture))))
     $alertCount = @($specs.Alerts | Where-Object { $_ }).Count
@@ -597,13 +777,23 @@ function Complete-SpecsReading($State) {
 }
 
 function Stop-SpecsReading($State, [switch]$Closing) {
-    # Annuler, Échap or closing the window. Not waited for: the reading is disposed once it ends on its own.
+    # Annuler, Échap or closing the window. Not waited for: the reading is disposed once it ends on its own. One of
+    # SCCM's is stopped too, as it holds SCCM's turn (Invoke-SccmRead) that the next read would wait for; its answer,
+    # if it comes all the same, is dropped (Start-SpecsSccmReading).
     $job = $State.Job
-    if (-not $job) { return }
+    if (-not $job -and -not $State.SccmRead) { return }
     $State.Timer.Stop()
-    $State.Job = $null
-    $null = $job.Shell.BeginStop($null, $null)
-    $script:SpecsStopping.Add($job)
+    # A read of SCCM's by itself chose nothing: what F5 does is what it was before.
+    if ($State.SccmRead) {
+        $State.SccmChosen = $State.SccmRead.Chosen
+        Stop-BackgroundRead $State
+    }
+    $State.SccmRead = $null
+    if ($job) {
+        $State.Job = $null
+        $null = $job.Shell.BeginStop($null, $null)
+        $script:SpecsStopping.Add($job)
+    }
     if ($Closing) { return }
     if ($State.Last) {
         Show-SpecsReading $State $State.Last
@@ -622,8 +812,8 @@ function Stop-SpecsReading($State, [switch]$Closing) {
 }
 
 function Copy-SpecsReport($State, [string]$Section) {
-    # The report, or one section, as text.
-    if (-not $State.Last) { return }
+    # The report, or one section, as text. Not during a reading: Last may be another one's, and the status says it runs.
+    if (-not $State.Last -or $State.Job -or $State.SccmRead) { return }
     Set-Clipboard -Value (Format-PCSpecReport $State.Last $Section)
     $what = if ($Section) { (Tr 'Section « {0} » copiée') -f $script:SpecsSections[$Section].Title } else { Tr 'Rapport copié' }
     $State.Controls['spec_status'].Text = "$what ($('{0:HH:mm:ss}' -f (Get-Date)))."
@@ -632,7 +822,7 @@ function Copy-SpecsReport($State, [string]$Section) {
 function Export-SpecsReport($State) {
     # Documents\PCSpecs\<name>_<date>.json and .txt.
     $specs = $State.Last
-    if (-not $specs) { return }
+    if (-not $specs -or $State.Job -or $State.SccmRead) { return }
     try {
         $folder = Join-Path ([Environment]::GetFolderPath('MyDocuments')) 'PCSpecs'
         $null = New-Item -ItemType Directory -Path $folder -Force
@@ -659,9 +849,11 @@ function Show-OpenSpecsWindow($Computer) {
     $true
 }
 
-function Show-SpecsWindow($Computer, $Owner, $Icon, [string]$FakeModule) {
+function Show-SpecsWindow($Computer, $Owner, $Icon, [string]$FakeModule, $SccmRead, [string]$Why, [string]$Failure, [switch]$FromSccm) {
     # Opens the window of a computer (a row of the results), or brings it to the front when it's already open. The
-    # action checks first that the computer answers (Start-SpecsCheck, ComputerActions.ps1).
+    # action checks first that the computer answers (Start-SpecsCheck, ComputerActions.ps1). When it can't be read: with
+    # SCCM's answer already read ($SccmRead, Get-SccmSpec'), or -FromSccm to read it now. $Why: how the banner says
+    # why the computer wasn't read; $Failure, how the failure says it when SCCM has nothing either.
     if (Show-OpenSpecsWindow $Computer) { return }
     $key = "$($Computer.Domain)|$($Computer.DistinguishedName)"
 
@@ -681,7 +873,7 @@ function Show-SpecsWindow($Computer, $Owner, $Icon, [string]$FakeModule) {
     Register-OwnerFocus $window
 
     $controls = @{}
-    $names = 'spec_title', 'spec_subtitle', 'spec_cancel', 'spec_refresh', 'spec_copy', 'spec_export', 'spec_open_folder', 'spec_status',
+    $names = 'spec_title', 'spec_subtitle', 'spec_cancel', 'spec_refresh', 'spec_copy', 'spec_export', 'spec_open_folder', 'spec_status', 'spec_source', 'spec_source_text', 'label_General_LoggedOnUser',
              'spec_toolbar', 'spec_expand_all', 'spec_collapse_all', 'spec_error', 'spec_error_text', 'spec_alert', 'spec_alert_text', 'spec_alert_summary', 'spec_alert_toggle',
              'spec_empty', 'spec_empty_text', 'spec_sections', 'disk_panel', 'monitor_panel', 'software_filter', 'software_count', 'software_grid'
     foreach ($name in $names) { $controls[$name] = $root.FindName($name) }
@@ -705,6 +897,12 @@ function Show-SpecsWindow($Computer, $Owner, $Icon, [string]$FakeModule) {
         AlertLines = @(); AlertsOpen = $false
         # Once the window closed: WinRM, when Repère turned it on for the window, can be put back (Update-WinRMLease).
         Closed = $false
+        # Where the reading shown comes from (Live or SCCM), how old SCCM's is (SourceLevel: info, warn, crit), the
+        # sections SCCM's doesn't have (Missing), SCCM's read under way, and why the computer itself wasn't read:
+        # SccmWhy for the banner, SccmFailure for the failure. SccmChosen: SCCM was chosen, or its inventory shown,
+        # since the computer was last read, so F5 goes back to it whatever keeps the computer from being read
+        # (Complete-SpecsReading).
+        Source = 'Live'; SourceLevel = ''; Missing = @(); SccmRead = $null; SccmWhy = ''; SccmFailure = ''; SccmChosen = $false
     }
     # The programs are a long list: closed at first, with their count in the summary.
     foreach ($section in $script:SpecsSections.Keys) { $state.Expanded[$section] = $section -ne 'Software' }
@@ -771,10 +969,10 @@ function Show-SpecsWindow($Computer, $Owner, $Icon, [string]$FakeModule) {
         param($specsWindow, $e)
         $state = $specsWindow.Tag
         $ctrl = ([System.Windows.Input.Keyboard]::Modifiers -band [System.Windows.Input.ModifierKeys]::Control) -ne 0
-        if ($e.Key -eq 'F5' -and -not $state.Job) { Start-SpecsReading $state; $e.Handled = $true }
+        if ($e.Key -eq 'F5' -and -not $state.Job -and -not $state.SccmRead) { Start-SpecsReading $state; $e.Handled = $true }
         elseif ($e.Key -eq 'C' -and $ctrl) { Copy-SpecsReport $state; $e.Handled = $true }
         elseif ($e.Key -eq 'Escape') {
-            if ($state.Job) { Stop-SpecsReading $state } else { $specsWindow.Close() }
+            if ($state.Job -or $state.SccmRead) { Stop-SpecsReading $state } else { $specsWindow.Close() }
             $e.Handled = $true
         }
     })
@@ -796,5 +994,15 @@ function Show-SpecsWindow($Computer, $Owner, $Icon, [string]$FakeModule) {
         $window.Top += $offset
         Set-WindowInWorkArea $window
     }
-    Start-SpecsReading $state
+    if ($SccmRead) {
+        $state.SccmWhy = $Why
+        $state.SccmFailure = $Failure
+        Clear-SpecsReading $state (Tr "Lecture de l'inventaire SCCM…")
+        Complete-SpecsSccmReading $state $SccmRead '' $(if ($SccmRead.ContainsKey('Seconds')) { [double]$SccmRead.Seconds } else { -1 })
+    }
+    elseif ($FromSccm) {
+        $state.SccmFailure = $Failure
+        Start-SpecsSccmReading $state $Why -Chosen
+    }
+    else { Start-SpecsReading $state }
 }

@@ -28,7 +28,7 @@ param(
 
     # Only these sessions (each starts Repère afresh), e.g. -Only UserDetail, GroupPage for a change to the Propriétés
     # windows; all of them without it.
-    [ValidateSet('Search', 'Address', 'Unreachable', 'Parallel', 'Actions', 'Remote', 'WinRMError', 'Shadow', 'Specs', 'SpecsDelay', 'MoveRootsLong', 'SingleDomain', 'Appearance', 'Column', 'Restart', 'Safeguards', 'Advanced', 'SearchMemory', 'UserPage', 'UserDetail', 'ComputerDetail', 'GroupPage', 'Settings', 'SettingsSave', 'Density', 'Limit', 'NextName', 'Copy', 'CopyButton', 'UnusedBox', 'BitLocker', 'Changelog')]
+    [ValidateSet('Search', 'Address', 'Unreachable', 'Parallel', 'Actions', 'Remote', 'WinRMError', 'Shadow', 'Specs', 'SpecsDelay', 'MoveRootsLong', 'SingleDomain', 'Appearance', 'Column', 'Restart', 'Safeguards', 'Advanced', 'SearchMemory', 'UserPage', 'UserDetail', 'ComputerDetail', 'GroupPage', 'Settings', 'SettingsSave', 'Density', 'Limit', 'NextName', 'SpecsSccm', 'Copy', 'CopyButton', 'UnusedBox', 'BitLocker', 'Changelog')]
     [string[]]$Only,
 
     # Repère in strict mode (REPERE_STRICT): what strict mode refuses fails the checks that reach it.
@@ -684,10 +684,10 @@ function Get-WindowImage($Element) {
     @{ Bitmap = $bitmap; Left = $rect.Left; Top = $rect.Top }
 }
 
-function Send-Key([int]$VirtualKey, $Target = $window) {
+function Send-Key([int]$VirtualKey, $Target = $window, [switch]$NoWait) {
     # For what UI Automation can't do: open the right-click menu, close it, and press a dialog's default button.
     # The keys are posted straight to the window, so they can't reach any other app; WPF hands them to the
-    # control that has the keyboard focus.
+    # control that has the keyboard focus. -NoWait: back at once, for a check that must see what follows the key.
     # A window that has closed meanwhile has no handle any more: nothing to send it.
     $native = $null
     try { $native = $Target.Current.NativeWindowHandle } catch { $native = $null }
@@ -695,7 +695,7 @@ function Send-Key([int]$VirtualKey, $Target = $window) {
     $handle = [IntPtr]$native
     [RepereWindows]::PostMessage($handle, 0x0100, [IntPtr]$VirtualKey, [IntPtr]1) | Out-Null           # WM_KEYDOWN
     [RepereWindows]::PostMessage($handle, 0x0101, [IntPtr]$VirtualKey, [IntPtr]0xC0000001) | Out-Null  # WM_KEYUP
-    Start-Sleep -Milliseconds 300
+    if (-not $NoWait) { Start-Sleep -Milliseconds 300 }
 }
 
 function Test-WindowEnabled {
@@ -893,12 +893,12 @@ function Test-Foreground($Window) {
     $false
 }
 
-function Wait-Dialog([string]$Title) {
+function Wait-Dialog([string]$Title, [int]$Seconds = 10) {
     # Dialogs are owned by the main window, so UI Automation lists them under it.
     $condition = [System.Windows.Automation.AndCondition]::new(
         [System.Windows.Automation.PropertyCondition]::new($AE::ControlTypeProperty, [System.Windows.Automation.ControlType]::Window),
         [System.Windows.Automation.PropertyCondition]::new($AE::NameProperty, $Title))
-    for ($i = 0; $i -lt 40; $i++) {
+    for ($i = 0; $i -lt $Seconds * 4; $i++) {
         $dialog = $window.FindFirst([System.Windows.Automation.TreeScope]::Children, $condition)
         if ($dialog) { return $dialog }
         Start-Sleep -Milliseconds 250
@@ -1814,11 +1814,12 @@ function Test-WinRMPromptFit([string]$MenuItem) {
     Remove-Item $appearanceFile -ErrorAction SilentlyContinue
 }
 
-function Wait-SpecsWindow([string]$Name) {
-    # The Caractéristiques window of a computer (owned by the main one), once its reading has ended.
-    $specsWindow = Wait-Dialog "Caractéristiques — $Name"
+function Wait-SpecsWindow([string]$Name, [int]$Seconds = 10) {
+    # The Caractéristiques window of a computer (owned by the main one), once its reading has ended. $Seconds: how
+    # long it may take to open (Wait-Dialog).
+    $specsWindow = Wait-Dialog "Caractéristiques — $Name" $Seconds
     $status = Get-DialogPart $specsWindow 'spec_status'
-    for ($i = 0; $i -lt 120 -and $status.Current.Name -notmatch '^(Lu en|Échec|Lecture annulée)'; $i++) { Start-Sleep -Milliseconds 250 }
+    for ($i = 0; $i -lt 120 -and $status.Current.Name -notmatch '^(Lu en|Échec|Lecture annulée|Inventaire SCCM)'; $i++) { Start-Sleep -Milliseconds 250 }
     $specsWindow
 }
 
@@ -6785,6 +6786,206 @@ function Test-NextName {
     }
 }
 
+function Wait-SpecsSccmRefresh($SpecsWindow, $Problems, [string]$When) {
+    # F5 in a window on SCCM's inventory, the computer still unreadable: its status once it's on SCCM's again. F5 must
+    # be seen to do something: the status leaves the inventory's (Connexion à…, then Lecture de l'inventaire SCCM…),
+    # or comes back with another time, or, both missed between two looks and the time the same, C:'s volume is
+    # another element (each reading builds the disks again). Watched from the key on: a computer that refuses at once
+    # and SCCM's 0.2 s are over within Send-Key's usual wait.
+    $volumeId = { $volume = Get-DialogPart $SpecsWindow 'vol_C'; if ($volume) { $volume.GetRuntimeId() -join '.' } else { '' } }
+    $before = & $volumeId
+    if (-not $before) { $Problems.Add("$When, before F5 C:'s volume isn't shown"); return }
+    $status = Get-DialogPart $SpecsWindow 'spec_status'
+    $beforeStatus = $status.Current.Name
+    Send-Key 0x74 $SpecsWindow -NoWait
+    $read = $false
+    $watch = [System.Diagnostics.Stopwatch]::StartNew()
+    do {
+        Start-Sleep -Milliseconds 50
+        $now = $status.Current.Name
+        if ($now -notlike 'Inventaire SCCM*' -or $now -ne $beforeStatus) { $read = $true }
+        $final = $now -match '^(Inventaire SCCM|Lu en|Échec|Lecture annulée)'
+        if ($final -and -not $read) { $read = (& $volumeId) -ne $before }
+    } until (($final -and $read) -or $watch.Elapsed.TotalSeconds -ge 35)
+    if (-not $read) { $Problems.Add("$When, F5 didn't read again: the status stayed '$now', C:'s volume the same element") }
+    elseif ($now -notlike 'Inventaire SCCM lu en *') { $Problems.Add("$When, after F5 the status is '$now'") }
+}
+
+function Test-SpecsSccm([string]$OfflineFile) {
+    # Caractéristiques with the fake SCCM's site: ORD-01 off for now ($OfflineFile lists it), whose inventory opens by
+    # itself, again on F5 while it's still off, then read live once it's back; ORD-06, which refuses this account
+    # (REPERE_FAKEAD_CIM_DENIED), whose inventory is offered, 20 days old, and kept on F5; ORD-04, refusing too and
+    # unknown to SCCM, the failure; ORD-09, off and unknown to SCCM, only a toast.
+    Select-Domain 'demo.local'
+    Invoke-PrefixSearch 'ORD-0'
+
+    Invoke-Check 'Caractéristiques on ORD-01, off, opens on SCCM''s inventory by itself, then reads the computer once it''s back (F5)' {
+        param($problems)
+        Select-ResultRow 'ORD-01'
+        Invoke-ResultMenuItem 'Caractéristiques…'
+        # It opens once SCCM's inventory is read: the first read of the run starts a runspace and imports the fake
+        # SCCM, then makes a dozen queries.
+        $specsWindow = Wait-SpecsWindow 'ORD-01' 40
+        if (-not $specsWindow) { throw 'No window for ORD-01.' }
+        $status = (Get-DialogPart $specsWindow 'spec_status').Current.Name
+        if ($status -notlike 'Inventaire SCCM lu en * s*') { $problems.Add("status is '$status'") }
+        $source = Get-SpecsValue $specsWindow 'spec_source_text'
+        $expected = "ORD-01 ne répond pas (ni au ping, ni à WinRM, ni à DCOM). Voici son inventaire SCCM du *, il y a 2 jours : ses valeurs sont celles de ce jour-là. Actualiser (F5) essaie d'abord l'ordinateur."
+        if ($source -notlike $expected) { $problems.Add("the banner says '$source'") }
+        $values = [ordered]@{ spec_General_Model = 'Bureau 5000'; spec_General_SerialNumber = 'DEMO0001'; spec_General_LoggedOnUser = 'DEMO\mroy'; spec_Network_IPAddress = '192.0.2.11'; vol_C = '* (57 %)' }
+        foreach ($id in $values.Keys) {
+            $value = Get-SpecsValue $specsWindow $id
+            if ($value -notlike $values[$id]) { $problems.Add("$id is '$value', expected '$($values[$id])'") }
+        }
+        $label = (Get-DialogPart $specsWindow 'label_General_LoggedOnUser').Current.Name
+        if ($label -ne 'Dernier utilisateur') { $problems.Add("the user's label is '$label'") }
+        # SCCM's inventory has neither.
+        foreach ($id in 'toggle_Battery', 'toggle_Dock') { if (Get-DialogPart $specsWindow $id) { $problems.Add("$id is shown") } }
+        $subtitle = (Get-DialogPart $specsWindow 'spec_subtitle').Current.Name
+        if ($subtitle -notlike '*· inventaire SCCM du *') { $problems.Add("subtitle is '$subtitle'") }
+        if (-not (Get-DialogPart $specsWindow 'spec_copy').Current.IsEnabled) { $problems.Add('Copier is disabled') }
+        # Écrans, open, says why it shows nothing.
+        $monitor = Get-DialogPart $specsWindow 'summary_Monitor'
+        if (-not $monitor -or $monitor.Current.Name -ne "Pas dans l'inventaire SCCM") { $problems.Add("Écrans, open, says '$(if ($monitor) { $monitor.Current.Name })'") }
+        if ($ScreenshotDirectory) { Save-Screenshot 'specs-sccm-ORD-01' $specsWindow }
+
+        # Still off: F5 tries the computer, then goes back to SCCM's inventory by itself, saying why again.
+        Wait-SpecsSccmRefresh $specsWindow $problems 'still off'
+        $source = Get-SpecsValue $specsWindow 'spec_source_text'
+        if ($source -notlike 'ORD-01 ne répond pas (ni au ping, ni à WinRM, ni à DCOM). Voici son inventaire SCCM du *') { $problems.Add("still off, after F5 the banner says '$source'") }
+
+        # Back: F5 reads the computer itself, and the banner goes.
+        Remove-Item -LiteralPath $OfflineFile
+        Send-Key 0x74 $specsWindow
+        $status = Get-DialogPart $specsWindow 'spec_status'
+        for ($i = 0; $i -lt 120 -and $status.Current.Name -notmatch '^(Lu en|Échec)'; $i++) { Start-Sleep -Milliseconds 250 }
+        if ($status.Current.Name -notlike 'Lu en *') { $problems.Add("back online, status is '$($status.Current.Name)'") }
+        $model = Get-SpecsValue $specsWindow 'spec_General_Model'
+        if ($model -ne 'Latitude 5440') { $problems.Add("back online, the model is '$model'") }
+        if (Get-DialogPart $specsWindow 'spec_source') { $problems.Add('back online, the SCCM banner stays') }
+        $label = (Get-DialogPart $specsWindow 'label_General_LoggedOnUser').Current.Name
+        if ($label -ne 'Utilisateur connecté') { $problems.Add("back online, the user's label is '$label'") }
+        if (Get-DialogPart $specsWindow 'summary_Monitor') { $problems.Add("back online, Écrans, open, still has a summary") }
+        Close-SpecsWindow $specsWindow
+    }
+
+    Invoke-Check 'Caractéristiques on ORD-06, which refuses this account, offers Lire depuis SCCM, which opens its old inventory' {
+        param($problems)
+        Select-ResultRow 'ORD-06'
+        Invoke-ResultMenuItem 'Caractéristiques…'
+        $dialog = Wait-AnyDialog
+        $text = if ($dialog) { (Get-DialogText $dialog) -replace "`r", '' } else { '' }
+        if (-not $dialog -or $text -notlike "Impossible de lire ORD-06*Accès refusé : il faut être administrateur de l'ordinateur.*") { throw "No warning for ORD-06: '$text'" }
+        $ok = Get-DialogPart $dialog 'dialog_ok'
+        if (-not $ok -or $ok.Current.Name -ne 'Lire depuis SCCM') { throw "The warning has no Lire depuis SCCM: '$(if ($ok) { $ok.Current.Name })'" }
+        if (@(Get-AppWindow | Where-Object { $_.Current.Name -eq 'Caractéristiques — ORD-06' }).Count) { $problems.Add('its window opened before the button') }
+        Close-Dialog $dialog 'dialog_ok'
+        $specsWindow = Wait-SpecsWindow 'ORD-06'
+        if (-not $specsWindow) { throw 'No window for ORD-06.' }
+        $source = Get-SpecsValue $specsWindow 'spec_source_text'
+        $expected = "ORD-06 ne peut pas être lu : accès refusé. Voici son inventaire SCCM du *, il y a 20 jours : ses valeurs sont celles de ce jour-là. Il est ancien : le site inventorie les ordinateurs tous les 7 jours. Actualiser (F5) essaie d'abord l'ordinateur."
+        if ($source -notlike $expected) { $problems.Add("the banner says '$source'") }
+        $os = Get-SpecsValue $specsWindow 'spec_General_OSName'
+        if ($os -ne 'Windows 10 Pro') { $problems.Add("the system is '$os'") }
+        $toggle = Get-DialogPart $specsWindow 'spec_alert_toggle'
+        if ($toggle) { Invoke-Element $toggle; Start-Sleep -Milliseconds 300 }
+        $alerts = (Get-SpecsValue $specsWindow 'spec_alert_text') -replace "`r", ''
+        foreach ($alert in @($alerts -split "`n")) { if ($alert -notlike '* (inventaire du *)') { $problems.Add("an alert isn't dated: '$alert'") } }
+        if ($ScreenshotDirectory) { Save-Screenshot 'specs-sccm-ORD-06' $specsWindow }
+        # Opened on SCCM's by choice: F5, still refused, goes back to it rather than to the failure.
+        Wait-SpecsSccmRefresh $specsWindow $problems 'still refused'
+        $source = Get-SpecsValue $specsWindow 'spec_source_text'
+        if ($source -notlike 'ORD-06 ne peut pas être lu : accès refusé. Voici son inventaire SCCM du *') { $problems.Add("still refused, after F5 the banner says '$source'") }
+        Close-SpecsWindow $specsWindow
+    }
+
+    Invoke-Check 'Caractéristiques on ORD-04, which refuses this account and that SCCM has no record of: Lire depuis SCCM says both' {
+        param($problems)
+        Select-ResultRow 'ORD-04'
+        Invoke-ResultMenuItem 'Caractéristiques…'
+        $dialog = Wait-AnyDialog
+        $ok = if ($dialog) { Get-DialogPart $dialog 'dialog_ok' }
+        if (-not $ok -or $ok.Current.Name -ne 'Lire depuis SCCM') { throw "No Lire depuis SCCM for ORD-04: '$(if ($dialog) { Get-DialogText $dialog })'" }
+        Close-Dialog $dialog 'dialog_ok'
+        $specsWindow = Wait-SpecsWindow 'ORD-04'
+        if (-not $specsWindow) { throw 'No window for ORD-04.' }
+        $status = (Get-DialogPart $specsWindow 'spec_status').Current.Name
+        if ($status -ne 'Échec de la lecture.') { $problems.Add("status is '$status'") }
+        $errorText = (Get-SpecsValue $specsWindow 'spec_error_text') -replace "`r", ''
+        if ($errorText -notlike "Impossible de lire ORD-04 : Accès refusé*`nIntrouvable dans SCCM (avec vos accès).") { $problems.Add("the failure says '$errorText'") }
+        if (Get-DialogPart $specsWindow 'spec_source') { $problems.Add('the SCCM banner is shown') }
+        Close-SpecsWindow $specsWindow
+    }
+
+    Invoke-Check 'Caractéristiques on ORD-09, off and unknown to SCCM, says both in a toast, with no window' {
+        param($problems)
+        Select-ResultRow 'ORD-09'
+        Invoke-ResultMenuItem 'Caractéristiques…'
+        $expected = 'Caractéristiques : ✖ ORD-09 : hors ligne (pas de réponse au ping, ni à WinRM ni à DCOM) · introuvable dans SCCM (avec vos accès)'
+        $notice = ''
+        for ($i = 0; $i -lt 10 -and $notice -ne $expected; $i++) { $notice = Wait-ActionNotice $expected }
+        if ($notice -ne $expected) { $problems.Add("the toast says '$notice'") }
+        if (@(Get-AppWindow | Where-Object { $_.Current.Name -eq 'Caractéristiques — ORD-09' }).Count) { $problems.Add('its window opened') }
+    }
+}
+
+function Test-SpecsSccmCancel {
+    # Each SCCM query slowed down (REPERE_FAKEAD_SCCM_DELAY): Échap stops the window's read of SCCM, which then lets go
+    # of SCCM for the next read rather than holding it until its end.
+    Select-Domain 'demo.local'
+    Invoke-PrefixSearch 'ORD-0'
+
+    Invoke-Check 'Caractéristiques: Échap stops a read of SCCM''s inventory, which then doesn''t hold up the next one' {
+        param($problems)
+        Select-ResultRow 'ORD-06'
+        Invoke-ResultMenuItem 'Caractéristiques…'
+        $dialog = Wait-AnyDialog
+        if (-not $dialog) { throw 'No warning for ORD-06.' }
+        Close-Dialog $dialog 'dialog_ok'
+        $specsWindow = Wait-Dialog 'Caractéristiques — ORD-06'
+        if (-not $specsWindow) { throw 'No window for ORD-06.' }
+        $status = Get-DialogPart $specsWindow 'spec_status'
+        if ($status.Current.Name -ne "Lecture de l'inventaire SCCM…") { $problems.Add("while SCCM is read, status is '$($status.Current.Name)'") }
+        Send-Key 0x1B $specsWindow
+        for ($i = 0; $i -lt 20 -and $status.Current.Name -ne 'Lecture annulée.'; $i++) { Start-Sleep -Milliseconds 100 }
+        if ($status.Current.Name -ne 'Lecture annulée.') { $problems.Add("after Échap, status is '$($status.Current.Name)'") }
+        if (-not @(Get-AppWindow | Where-Object { $_.Current.Name -eq 'Caractéristiques — ORD-06' }).Count) { $problems.Add('Échap closed the window') }
+        elseif (-not (Get-DialogPart $specsWindow 'spec_refresh').Current.IsEnabled) { $problems.Add('Actualiser is disabled after Échap') }
+        Close-SpecsWindow $specsWindow
+        # ORD-09, which SCCM has no record of, takes one query: said within seconds, not once ORD-06's whole inventory
+        # (a dozen queries) would have been read.
+        # A fixed deadline: ORD-06's read, left to run, would hold SCCM for about 24 s.
+        Select-ResultRow 'ORD-09'
+        Invoke-ResultMenuItem 'Caractéristiques…'
+        $expected = 'Caractéristiques : ✖ ORD-09 : hors ligne (pas de réponse au ping, ni à WinRM ni à DCOM) · introuvable dans SCCM (avec vos accès)'
+        $watch = [System.Diagnostics.Stopwatch]::StartNew()
+        do {
+            $shown = Find-ShownControl 'action_notice'
+            $notice = if ($shown) { $shown.Current.Name } else { '' }
+            if ($notice -eq $expected) { break }
+            Start-Sleep -Milliseconds 150
+        } until ($watch.Elapsed.TotalSeconds -ge 10)
+        if ($notice -ne $expected) { $problems.Add("after $([int]$watch.Elapsed.TotalSeconds) s, ORD-09's toast says '$notice'") }
+    }
+}
+
+function Test-SpecsSccmDown {
+    # The same, with the fake SCCM down: ORD-09's toast says SCCM wasn't checked, and why.
+    Select-Domain 'demo.local'
+    Invoke-PrefixSearch 'ORD-0'
+
+    Invoke-Check 'Caractéristiques on ORD-09, off, with SCCM down, says SCCM wasn''t checked, and why' {
+        param($problems)
+        Select-ResultRow 'ORD-09'
+        Invoke-ResultMenuItem 'Caractéristiques…'
+        $expected = 'Caractéristiques : ✖ ORD-09 : hors ligne (pas de réponse au ping, ni à WinRM ni à DCOM) · SCCM non vérifié : sccm.demo.local ne répond pas'
+        $notice = ''
+        for ($i = 0; $i -lt 20 -and $notice -ne $expected; $i++) { $notice = Wait-ActionNotice $expected }
+        if ($notice -ne $expected) { $problems.Add("the toast says '$notice'") }
+        if (@(Get-AppWindow | Where-Object { $_.Current.Name -eq 'Caractéristiques — ORD-09' }).Count) { $problems.Add('its window opened') }
+    }
+}
+
 function Set-SccmSetting([string]$Site, [string]$Server) {
     # A site in parametres.json, for the next start.
     $folder = Join-Path $env:APPDATA 'Repere'
@@ -7082,6 +7283,24 @@ function Test-SettingsSaving {
         if (Test-SettingsOpen) { $problems.Add('Paramètres stayed open with nothing left to save') }
     }
 
+    Invoke-Check 'Paramètres › SCCM: how often the site inventories computers, 1 to 90 days, saved as its box is left' {
+        param($problems)
+        $settingsWindow = Open-SettingsSection 'sccm'
+        if ((Get-DialogValue $settingsWindow 'settings_sccm_days') -ne '7') { $problems.Add("the box shows '$(Get-DialogValue $settingsWindow 'settings_sccm_days')', not 7") }
+        Set-LeftDialogText $settingsWindow 'settings_sccm_days' '0' 'settings_sccm_test'
+        $problem = Get-DialogPartName $settingsWindow 'settings_sccm_days_problem'
+        if ($problem -ne 'Un nombre de jours, de 1 à 90.') { $problems.Add("0 says '$problem' under its box") }
+        if ((Read-SavedSetting 'parametres.json').SccmInventoryDays -eq 0) { $problems.Add('0 was saved') }
+        Set-LeftDialogText $settingsWindow 'settings_sccm_days' '14' 'settings_sccm_test'
+        if (Get-DialogPartName $settingsWindow 'settings_sccm_days_problem') { $problems.Add('the problem stays once the number is fixed') }
+        if ((Read-SavedSetting 'parametres.json').SccmInventoryDays -ne 14) { $problems.Add("14 saved '$((Read-SavedSetting 'parametres.json').SccmInventoryDays)'") }
+        # Emptied: the default, shown and saved.
+        Set-LeftDialogText $settingsWindow 'settings_sccm_days' '' 'settings_sccm_test'
+        if ((Get-DialogValue $settingsWindow 'settings_sccm_days') -ne '7') { $problems.Add("emptied, the box shows '$(Get-DialogValue $settingsWindow 'settings_sccm_days')'") }
+        if ((Read-SavedSetting 'parametres.json').SccmInventoryDays -ne 7) { $problems.Add("emptied, it saved '$((Read-SavedSetting 'parametres.json').SccmInventoryDays)'") }
+        Close-SettingsWindow $settingsWindow
+    }
+
     Invoke-Check 'Paramètres › SCCM: both boxes emptied and the section left turns SCCM off, and says so' {
         param($problems)
         $settingsWindow = Open-SettingsSection 'sccm'
@@ -7096,7 +7315,7 @@ function Test-SettingsSaving {
         (Get-DialogPart $settingsWindow 'nav_sccm').GetCurrentPattern([System.Windows.Automation.SelectionItemPattern]::Pattern).Select()
         Start-Sleep -Milliseconds 300
         $status = Get-DialogPartName $settingsWindow 'settings_sccm_status'
-        if ($status -ne 'SCCM désactivé : « Prochain nom… » ne vérifiera que dans l''AD.') { $problems.Add("emptied, it says '$status'") }
+        if ($status -ne 'SCCM désactivé : « Prochain nom… » ne vérifiera que dans l''AD, et « Caractéristiques » ne lira plus son inventaire.') { $problems.Add("emptied, it says '$status'") }
         # Typed again and Paramètres closed: saved as it closes.
         Set-DialogText $settingsWindow 'settings_sccm_site' 'DEM'
         Set-DialogText $settingsWindow 'settings_sccm_server' 'sccm.demo.local'
@@ -9045,6 +9264,12 @@ $previousNoCommonOU = $env:REPERE_FAKEAD_NO_COMMON_OU
 $previousUnreachable = $env:REPERE_FAKEAD_UNREACHABLE
 $previousSlow = $env:REPERE_FAKEAD_SLOW
 $previousSpecsDelay = $env:REPERE_FAKEAD_SPECS_DELAY
+$previousOffline = $env:REPERE_FAKEAD_OFFLINE
+# The computers SpecsSccm has off: removed in the end too, should the session stop halfway.
+$offlineFile = Join-Path ([System.IO.Path]::GetTempPath()) "repere-offline-$PID.txt"
+$previousCimDenied = $env:REPERE_FAKEAD_CIM_DENIED
+$previousSccmDelay = $env:REPERE_FAKEAD_SCCM_DELAY
+$previousSccmUnreachable = $env:REPERE_FAKEAD_SCCM_UNREACHABLE
 # Exporter saves here instead of asking where.
 $previousExportPath = $env:REPERE_EXPORT_PATH
 $previousStrict = $env:REPERE_STRICT
@@ -9346,6 +9571,31 @@ try {
         Stop-App
     }
 
+    if (Test-Session 'SpecsSccm') {
+        # Caractéristiques with the fake SCCM's site: ORD-01 off until a file listing it goes, ORD-06 refusing this
+        # account, as ORD-04, which SCCM doesn't have; then with SCCM slow, and down.
+        'ord-01.demo.local' | Set-Content -LiteralPath $offlineFile
+        $env:REPERE_FAKEAD_OFFLINE = $offlineFile
+        $env:REPERE_FAKEAD_CIM_DENIED = 'ord-06.demo.local;ord-04.demo.local'
+        Set-SccmSetting 'DEM' 'sccm.demo.local'
+        Start-App -KeepSettings
+        Test-SpecsSccm $offlineFile
+        Stop-App
+        $env:REPERE_FAKEAD_SCCM_DELAY = '2'
+        Start-App -KeepSettings
+        Test-SpecsSccmCancel
+        Stop-App
+        $env:REPERE_FAKEAD_SCCM_DELAY = $previousSccmDelay
+        $env:REPERE_FAKEAD_SCCM_UNREACHABLE = '1'
+        Start-App -KeepSettings
+        Test-SpecsSccmDown
+        Stop-App
+        $env:REPERE_FAKEAD_SCCM_UNREACHABLE = $previousSccmUnreachable
+        $env:REPERE_FAKEAD_OFFLINE = $previousOffline
+        $env:REPERE_FAKEAD_CIM_DENIED = $previousCimDenied
+        Remove-Item -LiteralPath $offlineFile -ErrorAction SilentlyContinue
+    }
+
     if (Test-Session 'Limit') {
         # The searches' limit, 1 instead of 2 000 (the sample data is small): each page says it was reached, and Tout
         # afficher runs the same search without it.
@@ -9455,7 +9705,7 @@ try {
         Start-App -KeepSettings
         Test-NextNameFailure
         Stop-App
-        $env:REPERE_FAKEAD_SCCM_UNREACHABLE = $null
+        $env:REPERE_FAKEAD_SCCM_UNREACHABLE = $previousSccmUnreachable
         $env:REPERE_FAKEAD_UNREACHABLE = $previousUnreachable
     }
 
@@ -9480,9 +9730,14 @@ finally {
     $env:REPERE_FAKEAD_UNREACHABLE = $previousUnreachable
     $env:REPERE_FAKEAD_SLOW = $previousSlow
     $env:REPERE_FAKEAD_SPECS_DELAY = $previousSpecsDelay
+    $env:REPERE_FAKEAD_OFFLINE = $previousOffline
+    $env:REPERE_FAKEAD_CIM_DENIED = $previousCimDenied
+    $env:REPERE_FAKEAD_SCCM_DELAY = $previousSccmDelay
+    $env:REPERE_FAKEAD_SCCM_UNREACHABLE = $previousSccmUnreachable
     $env:REPERE_EXPORT_PATH = $previousExportPath
     $env:REPERE_STRICT = $previousStrict
     Remove-Item $exportFile -ErrorAction SilentlyContinue
+    Remove-Item -LiteralPath $offlineFile -ErrorAction SilentlyContinue
 }
 
 if ($desktopProblem) {

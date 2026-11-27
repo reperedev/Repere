@@ -88,7 +88,7 @@ $($definitions -join [Environment]::NewLine)
     $null = $shell.AddScript($script).AddArgument($Variables).AddArgument($Arguments).AddArgument($script:rowBuilderScript).AddArgument($clock)
     # Asked while the runspaces are still opening (right after launch): started by the timer once they have.
     $handle = if ("$($script:searchPool.RunspacePoolStateInfo.State)" -notin 'BeforeOpen', 'Opening') { $shell.BeginInvoke() }
-    $script:BackgroundReadList.Add(@{ Shell = $shell; Handle = $handle; OnDone = $OnDone; Context = $Context; Timeout = $Timeout; Clock = $clock })
+    $script:BackgroundReadList.Add(@{ Shell = $shell; Handle = $handle; OnDone = $OnDone; Context = $Context; Timeout = $Timeout; Clock = $clock; Stopped = $false })
     $script:BackgroundReadTimer.Start()
 }
 
@@ -104,9 +104,18 @@ function Complete-BackgroundRead {
     foreach ($read in @($script:BackgroundStopping | Where-Object { $_.Handle.IsCompleted })) {
         if ($script:BackgroundStopping.Remove($read)) { $read.Shell.Dispose() }
     }
-    # Those that waited for the runspaces, which have opened or never will: the error then goes to their OnDone.
+    # Those stopped while they waited for the runspaces (Stop-BackgroundRead): never started, and their OnDone told,
+    # as a stopped read's would be.
+    foreach ($read in @($script:BackgroundReadList | Where-Object { -not $_.Handle -and $_.Stopped })) {
+        if (-not $script:BackgroundReadList.Remove($read)) { continue }
+        $read.Shell.Dispose()
+        try { & $read.OnDone $read.Context $null ([System.Management.Automation.PipelineStoppedException]::new().Message) $false }
+        catch { Write-Host ((Tr 'Lecture en arrière-plan : {0}') -f $_) }
+    }
+    # Those that waited for the runspaces, which have opened or never will: the error then goes to their OnDone. Not
+    # one an OnDone above stopped: the next tick drops it.
     if ("$($script:searchPool.RunspacePoolStateInfo.State)" -notin 'BeforeOpen', 'Opening') {
-        foreach ($read in @($script:BackgroundReadList | Where-Object { -not $_.Handle })) {
+        foreach ($read in @($script:BackgroundReadList | Where-Object { -not $_.Handle -and -not $_.Stopped })) {
             try { $read.Handle = $read.Shell.BeginInvoke() }
             catch {
                 $why = $_.Exception.Message
@@ -139,13 +148,14 @@ function Complete-BackgroundRead {
 function Stop-BackgroundRead($Context) {
     # The reads under way for $Context (a Propriétés window that closed), or with it as their context's State (its
     # members' search): stopped, so a slow DC doesn't keep a runspace busy for nothing. Their OnDone still runs, with
-    # the stop as their problem, once the timer collects them.
+    # the stop as their problem, once the timer collects them. One still waiting for the runspaces to open is marked,
+    # and never started: it would hold what it waits on (SCCM's turn) for nothing.
     $mine = {
         param($read)
         [object]::ReferenceEquals($read.Context, $Context) -or ($read.Context -is [hashtable] -and [object]::ReferenceEquals($read.Context['State'], $Context))
     }
-    foreach ($read in @($script:BackgroundReadList | Where-Object { $_.Handle -and -not $_.Handle.IsCompleted -and (& $mine $_) })) {
-        $null = $read.Shell.BeginStop($null, $null)
+    foreach ($read in @($script:BackgroundReadList | Where-Object { -not ($_.Handle -and $_.Handle.IsCompleted) -and (& $mine $_) })) {
+        if ($read.Handle) { $null = $read.Shell.BeginStop($null, $null) } else { $read.Stopped = $true }
     }
 }
 

@@ -387,6 +387,228 @@ Describe 'The inventory' {
     }
 }
 
+Describe 'Caractéristiques from SCCM (Get-SccmSpec)' {
+    BeforeEach { Reset-Sccm }
+
+    It 'Finds the computer and reads its inventory' {
+        $read = Get-SccmSpec $script:Site 'ORD-06' 'demo.local'
+        $read.Answer | Should -BeExactly 'Found'
+        $read.Count | Should -Be 1
+        $read.Inventory.System.Rows[0].Name | Should -BeExactly 'ORD-06'
+        $read.Inventory.Scan.Rows[0].LastHardwareScan | Should -BeOfType [datetime]
+    }
+
+    It 'Reads no inventory of a computer SCCM has no record of' {
+        $log = Join-Path $TestDrive 'specs-notfound.log'
+        $env:REPERE_FAKEAD_SCCM_LOG = $log
+        $read = Get-SccmSpec $script:Site 'ORD-09' 'demo.local'
+        $read.Answer | Should -BeExactly 'NotFound'
+        $read.Inventory | Should -BeNullOrEmpty
+        # The log was written, by the search for its record: no inventory query isn't no query at all.
+        Get-Content $log | Should -Match "FROM SMS_R_System WHERE Name IN \('ORD-09'\)"
+        @(Get-Content $log | Where-Object { $_ -match 'SMS_G_System' }) | Should -BeNullOrEmpty
+    }
+
+    It 'Says a record SCCM never inventoried has no inventory, not an empty one' {
+        $read = Get-SccmSpec $script:Site 'ORD-14' 'demo.local' 'S-1-5-21-1-2-3-9014'
+        $read.Answer | Should -BeExactly 'NoInventory'
+        $read.Reason | Should -BeExactly "SCCM n'a pas d'inventaire de cet ordinateur"
+        $read.Inventory | Should -BeNullOrEmpty
+        [int64]$read.Device.ResourceID | Should -Be 16777219
+    }
+
+    It 'Keeps an inventory whose sections failed, even with no row: its errors are to be seen' {
+        $env:REPERE_FAKEAD_SCCM_REFUSED = 'PC_BIOS'
+        $read = Get-SccmSpec $script:Site 'ORD-14' 'demo.local' 'S-1-5-21-1-2-3-9014'
+        $read.Answer | Should -BeExactly 'Found'
+        $read.Inventory.Bios.Read | Should -BeFalse
+        $read.Inventory.Bios.Reason | Should -BeExactly 'Accès refusé'
+    }
+
+    It 'Has no inventory with a date alone, or with a class refused that no section shows: <Name>' -ForEach @(
+        @{ Name = 'RENTRE-01'; Refused = $null }
+        @{ Name = 'ORD-14'; Refused = 'WORKSTATION_STATUS|PHYSICAL_MEMORY' }
+    ) {
+        $env:REPERE_FAKEAD_SCCM_REFUSED = $Refused
+        $read = Get-SccmSpec $script:Site $Name 'demo.local'
+        $read.Answer | Should -BeExactly 'NoInventory'
+        $read.Reason | Should -BeExactly "SCCM n'a pas d'inventaire de cet ordinateur"
+        $read.Inventory | Should -BeNullOrEmpty
+    }
+
+    It 'Reads the latest of several records, and says how many there are' {
+        $read = Get-SccmSpec $script:Site 'DOUBLE-01' 'demo.local'
+        $read.Answer | Should -BeExactly 'Ambiguous'
+        $read.Count | Should -Be 2
+        [int64]$read.Device.ResourceID | Should -Be 16777222
+        $read.Latest | Should -BeTrue
+        $read.Inventory | Should -Not -BeNullOrEmpty
+    }
+
+    It 'Reads an older record when the latest has no inventory, and says it isn''t the latest' {
+        $read = Get-SccmSpec $script:Site 'DOUBLE-02' 'demo.local'
+        $read.Answer | Should -BeExactly 'Ambiguous'
+        $read.Count | Should -Be 2
+        [int64]$read.Device.ResourceID | Should -Be 16777226
+        $read.Latest | Should -BeFalse
+        $read.LatestSkipped | Should -BeExactly 'Empty'
+        $read.Inventory.System.Rows[0].Name | Should -BeExactly 'DOUBLE-02'
+    }
+
+    It 'Prefers an older record with rows to the latest whose sections failed' {
+        $env:REPERE_FAKEAD_SCCM_REFUSED = 'COMPUTER_SYSTEM'
+        $read = Get-SccmSpec $script:Site 'DOUBLE-02' 'demo.local'
+        [int64]$read.Device.ResourceID | Should -Be 16777226
+        $read.Inventory.Bios.Rows[0].SerialNumber | Should -BeExactly 'DEMO0026'
+        $read.Inventory.System.Read | Should -BeFalse
+        # Not known empty: the note says it couldn't be read.
+        $read.Latest | Should -BeFalse
+        $read.LatestSkipped | Should -BeExactly 'Unread'
+    }
+
+    It 'Doesn''t show a record of which nothing was read after an empty latest: says it couldn''t be read' {
+        $env:REPERE_FAKEAD_SCCM_REFUSED = 'ResourceID = 16777226'
+        $read = Get-SccmSpec $script:Site 'DOUBLE-02' 'demo.local'
+        $read.Answer | Should -BeExactly 'NoInventory'
+        $read.Reason | Should -BeExactly "SCCM n'a d'inventaire d'aucune fiche lue de cet ordinateur (1 sur 2) ; la suivante n'a pas pu être lue"
+        $read.Inventory | Should -BeNullOrEmpty
+    }
+
+    It 'Doesn''t start another record without time for a whole inventory, and says it wasn''t read' {
+        # Less time left than a query is given: the next record's queries would be cut short, and blamed on SCCM.
+        $script:SccmQuerySeconds, $script:SccmTotalSeconds = 40, 30
+        $env:REPERE_FAKEAD_SCCM_LOG = Join-Path $TestDrive 'specs-time.log'
+        $read = Get-SccmSpec $script:Site 'DOUBLE-02' 'demo.local'
+        $read.Answer | Should -BeExactly 'NoInventory'
+        $read.Reason | Should -BeExactly "SCCM n'a d'inventaire d'aucune fiche lue de cet ordinateur (1 sur 2) ; la suivante n'a pas pu être lue"
+        Get-Content $env:REPERE_FAKEAD_SCCM_LOG -Raw | Should -Match 'ResourceID = 16777227'
+        Get-Content $env:REPERE_FAKEAD_SCCM_LOG -Raw | Should -Not -Match 'ResourceID = 16777226'
+    }
+
+    It 'Doesn''t ask for the next record when nothing of the latest could be read' {
+        $env:REPERE_FAKEAD_SCCM_REFUSED = 'SMS_G_System'
+        $env:REPERE_FAKEAD_SCCM_LOG = Join-Path $TestDrive 'specs-refused.log'
+        $read = Get-SccmSpec $script:Site 'DOUBLE-02' 'demo.local'
+        [int64]$read.Device.ResourceID | Should -Be 16777227
+        $read.Latest | Should -BeTrue
+        $read.Inventory.System.Read | Should -BeFalse
+        Get-Content $env:REPERE_FAKEAD_SCCM_LOG -Raw | Should -Match 'ResourceID = 16777227'
+        Get-Content $env:REPERE_FAKEAD_SCCM_LOG -Raw | Should -Not -Match 'ResourceID = 16777226'
+    }
+
+    It 'Says none of several records has an inventory, or none of those read: <Tries> of 2' -ForEach @(
+        @{ Tries = 3; Reason = "SCCM n'a d'inventaire d'aucune des 2 fiches de cet ordinateur" }
+        @{ Tries = 1; Reason = "SCCM n'a d'inventaire d'aucune fiche lue de cet ordinateur (1 sur 2)" }
+    ) {
+        # DOUBLE-01's records only have a BIOS: as content alone, the processor, neither has one.
+        $saved = $script:SccmContentSections, $script:SccmSpecTries
+        $script:SccmContentSections, $script:SccmSpecTries = @('Processor'), $Tries
+        try { $read = Get-SccmSpec $script:Site 'DOUBLE-01' 'demo.local' }
+        finally { $script:SccmContentSections, $script:SccmSpecTries = $saved }
+        $read.Answer | Should -BeExactly 'NoInventory'
+        $read.Count | Should -Be 2
+        $read.Reason | Should -BeExactly $Reason
+        $read.Inventory | Should -BeNullOrEmpty
+    }
+
+    It 'Decides an inventory by the sections Caractéristiques shows, their rows or their failure' {
+        # The classes ConvertFrom-SccmInventory's sections are made from: their failure is a section's error.
+        $file = Join-Path $script:RepereSource 'PCSpecs.ps1'
+        $ast = [System.Management.Automation.Language.Parser]::ParseFile($file, [ref]$null, [ref]$null)
+        $convert = $ast.Find({ param($node) $node -is [System.Management.Automation.Language.FunctionDefinitionAst] -and $node.Name -eq 'ConvertFrom-SccmInventory' }, $true)
+        $calls = @($convert.Body.FindAll({ param($node) $node -is [System.Management.Automation.Language.CommandAst] -and $node.InvocationOperator -eq 'Ampersand' -and $node.CommandElements[0].Extent.Text -eq '$section' }, $false))
+        $calls.Count | Should -BeGreaterThan 0
+        $classes = @($calls | ForEach-Object { $_.CommandElements[2].SafeGetValue() } | ForEach-Object { $_ })
+        @($classes | Sort-Object) | Should -Be @($script:SccmContentSections | Sort-Object)
+        @($script:SccmContentSections | Where-Object { $_ -notin $script:SccmSections.Keys }) | Should -BeNullOrEmpty
+    }
+
+    It 'Says why when SCCM doesn''t answer, and reads nothing' {
+        $env:REPERE_FAKEAD_SCCM_UNREACHABLE = '1'
+        $read = Get-SccmSpec $script:Site 'ORD-06' 'demo.local'
+        $read.Answer | Should -BeExactly 'NotChecked'
+        $read.Reason | Should -BeExactly 'sccm.demo.local ne répond pas'
+        $read.Inventory | Should -BeNullOrEmpty
+    }
+
+    It 'Is a read the search runspaces can run, with every function of Sccm.ps1 and PCSpecs.ps1 it calls' {
+        $listed = @(Get-SccmReadFunction)
+        $listed | Should -Contain 'Get-SccmSpec'
+        # The top-level functions only: Read-SccmRow is the link runspace's own ($SccmLinkScript).
+        $defined = @{}
+        foreach ($name in 'Sccm.ps1', 'PCSpecs.ps1') {
+            $ast = [System.Management.Automation.Language.Parser]::ParseFile((Join-Path $script:RepereSource $name), [ref]$null, [ref]$null)
+            foreach ($function in $ast.FindAll({ param($node) $node -is [System.Management.Automation.Language.FunctionDefinitionAst] }, $false)) { $defined[$function.Name] = $function }
+        }
+        # Every listed function's callees, transitively: a read can start from any of them. Those of other files
+        # (Get-ErrorKind) aren't looked into.
+        $defined.ContainsKey('Get-SccmSpec') | Should -BeTrue
+        $missing = foreach ($name in $listed | Where-Object { $defined.ContainsKey($_) }) {
+            foreach ($call in $defined[$name].Body.FindAll({ param($node) $node -is [System.Management.Automation.Language.CommandAst] }, $true)) {
+                $called = $call.GetCommandName()
+                if ($called -and $defined.ContainsKey($called) -and $called -notin $listed) { "$name calls $called" }
+            }
+        }
+        @($missing) | Should -BeNullOrEmpty
+    }
+
+    It 'Is given every script variable the functions it runs read' {
+        $listed = @(Get-SccmReadFunction)
+        # Get-SccmReadVariable's keys as written, without calling it: it needs the fake AD's path set.
+        $given = @()
+        # Given otherwise: FrenchErrors by Start-BackgroundRead itself.
+        $elsewhere = 'FrenchErrors'
+        $used = @{}
+        foreach ($name in 'Sccm.ps1', 'PCSpecs.ps1') {
+            $ast = [System.Management.Automation.Language.Parser]::ParseFile((Join-Path $script:RepereSource $name), [ref]$null, [ref]$null)
+            $variables = $ast.Find({ param($node) $node -is [System.Management.Automation.Language.FunctionDefinitionAst] -and $node.Name -eq 'Get-SccmReadVariable' }, $false)
+            if ($variables) { $given = @($variables.Body.Find({ param($node) $node -is [System.Management.Automation.Language.HashtableAst] }, $true).KeyValuePairs | ForEach-Object { $_.Item1.Extent.Text }) }
+            foreach ($function in $ast.FindAll({ param($node) $node -is [System.Management.Automation.Language.FunctionDefinitionAst] -and $node.Name -in $listed }, $false)) {
+                foreach ($variable in $function.Body.FindAll({ param($node) $node -is [System.Management.Automation.Language.VariableExpressionAst] -and $node.VariablePath.IsScript }, $true)) {
+                    $used[$variable.VariablePath.UserPath -replace '^script:'] = $function.Name
+                }
+            }
+        }
+        $used.Count | Should -BeGreaterThan 0
+        $given | Should -Contain 'SccmLink'
+        @($used.Keys | Where-Object { $_ -notin $given -and $_ -notin $elsewhere } | ForEach-Object { "$($used[$_]) reads `$script:$_" }) | Should -BeNullOrEmpty
+    }
+}
+
+Describe 'How often the site inventories computers (Paramètres › SCCM)' {
+    It 'Takes <Days> as <Problem>' -ForEach @(
+        @{ Days = ''; Problem = '' }
+        @{ Days = '1'; Problem = '' }
+        @{ Days = ' 90 '; Problem = '' }
+        @{ Days = '0'; Problem = 'Un nombre de jours, de 1 à 90.' }
+        @{ Days = '91'; Problem = 'Un nombre de jours, de 1 à 90.' }
+        @{ Days = 'sept'; Problem = 'Un nombre de jours, de 1 à 90.' }
+    ) {
+        "$(Get-SccmDaysProblem $Days)" | Should -BeExactly $Problem
+    }
+
+    It 'Is read with the site, 7 days unless a valid number is saved' {
+        $saved = $script:SettingsPath
+        try {
+            $script:SettingsPath = Join-Path $TestDrive 'parametres-days.json'
+            '{ "SccmSite": "DEM", "SccmServer": "sccm.demo.local" }' | Set-Content $script:SettingsPath
+            (Read-SccmSetting).InventoryDays | Should -Be 7
+            '{ "SccmSite": "DEM", "SccmServer": "sccm.demo.local", "SccmInventoryDays": 14 }' | Set-Content $script:SettingsPath
+            (Read-SccmSetting).InventoryDays | Should -Be 14
+            '{ "SccmSite": "DEM", "SccmServer": "sccm.demo.local", "SccmInventoryDays": 400 }' | Set-Content $script:SettingsPath
+            (Read-SccmSetting).InventoryDays | Should -Be 7
+            # Edited by hand: what passes as a number is read as one, not an error.
+            '{ "SccmSite": "DEM", "SccmServer": "sccm.demo.local", "SccmInventoryDays": [14] }' | Set-Content $script:SettingsPath
+            (Read-SccmSetting).InventoryDays | Should -Be 14
+            '{ "SccmSite": "DEM", "SccmServer": "sccm.demo.local", "SccmInventoryDays": " 21 " }' | Set-Content $script:SettingsPath
+            (Read-SccmSetting).InventoryDays | Should -Be 21
+            '{ "SccmSite": "DEM", "SccmServer": "sccm.demo.local", "SccmInventoryDays": [14, 21] }' | Set-Content $script:SettingsPath
+            (Read-SccmSetting).InventoryDays | Should -Be 7
+        }
+        finally { $script:SettingsPath = $saved }
+    }
+}
+
 Describe 'The runspace the reads share' {
     BeforeEach { Reset-Sccm }
 

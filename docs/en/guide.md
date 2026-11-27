@@ -85,6 +85,7 @@ A computer's hardware, Windows, network, monitors, battery, docking station and 
 - **Copy** (Ctrl+C) gives the report as text, to paste into a ticket; **Export** saves it as JSON and text in `Documents\PCSpecs`; **Refresh** (F5) reads the computer again.
 - Each section folds; **Collapse all** keeps only their summary.
 - The window opens once the computer has been reached. If it's off, Repère says so within a few seconds. Without WinRM, Repère offers to turn it on for the reading (it's put back as it was when the window closes), or to **Read over DCOM**, which is slower.
+- With a site in **Settings › SCCM**, a computer that's off, not in DNS or too slow opens on its last SCCM inventory, under a banner that gives its date: amber after two missed inventories, red after four. Reached but unreadable (access denied), Repère offers **Read from SCCM**. The values are those of the inventory's day: the user becomes **Last user**, and monitors, battery and docking station aren't in it. **Refresh** (F5) tries the computer first, then SCCM if it isn't reached, or if SCCM was already chosen or shown in that window; reached but unreadable, the computer shows its error. An undated inventory is red. If SCCM doesn't have the computer either, has no inventory of it (it found it but never inventoried it) or couldn't be read, the notification says so, or the window after **Read from SCCM** or **Refresh**.
 
 ### Take control
 
@@ -146,7 +147,7 @@ The **Settings** button, at the top right, has these pages:
 - **Move to**: the OUs offered to move a computer to.
 - **Restart**: the delay and message **Restart…** suggests.
 - **Passwords**: a generated password, or always the same temporary password, kept encrypted for your Windows account.
-- **SCCM**: the site code and server **Next name…** checks, with **Test**, which says whether the site answers, through which server, and whether this computer's inventory can be read.
+- **SCCM**: the site code and server **Next name…** checks and **Specifications** reads the inventory from, how often the site inventories computers (7 days by default), and **Test**, which says whether the site answers, through which server, and whether this computer's inventory can be read.
 - **Shortcuts**: the list of keyboard shortcuts.
 
 Everything saves without a button: when you leave a box, change pages or close the window.

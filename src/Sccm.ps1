@@ -1,5 +1,6 @@
-﻿# SCCM (Configuration Manager), only ever read: the one file that knows how it's reached. Prochain nom… (NextName.ps1) and
-# Paramètres › SCCM › Tester ask it through the functions below; none of them holds a query of its own.
+﻿# SCCM (Configuration Manager), only ever read: the one file that knows how it's reached. Prochain nom… (NextName.ps1),
+# Caractéristiques when the computer can't be read (SpecsWindow.ps1, ComputerActions.ps1) and Paramètres › SCCM › Tester
+# ask it through the functions below; none of them holds a query of its own.
 #
 # The site is reached through the console's PowerShell module, in a runspace of its own ($SccmLink) kept from one read to
 # the next: the module takes seconds to load, its cmdlets only run from the site's drive, a location the search runspaces
@@ -29,6 +30,9 @@ $script:SccmRenewMinutes = 60
 $script:SccmStopMinutes = 10
 # How many computers a query asks for at most.
 $script:SccmBatchSize = 50
+# How often the site inventories a computer's hardware, in days, unless Paramètres › SCCM says otherwise: an inventory
+# is old once two are missed, very old after four (Get-SccmScanAge, PCSpecs.ps1).
+$script:SccmInventoryDays = 7
 
 # The runspace the reads share, the search runspaces' too (Get-SccmReadVariable): Gate lets one read at a time in; Ready
 # once the module and the site's drive are there; until RestUntil, reads nobody clicked for get RestReason at once.
@@ -67,6 +71,12 @@ $script:SccmSections = [ordered]@{
     Program   = @{ Class = 'SMS_G_System_ADD_REMOVE_PROGRAMS'; Columns = 'DisplayName', 'Version', 'Publisher', 'InstallDate', 'ProdID' }
     Program64 = @{ Class = 'SMS_G_System_ADD_REMOVE_PROGRAMS_64'; Columns = 'DisplayName', 'Version', 'Publisher', 'InstallDate', 'ProdID' }
 }
+# The sections whose rows, or failure, Caractéristiques shows (ConvertFrom-SccmInventory, PCSpecs.ps1): what makes an
+# inventory, for Get-SccmSpec. Not Scan, a date a record can have alone, nor Module, whose failure no section shows (not
+# every site collects it).
+$script:SccmContentSections = 'System', 'Bios', 'Windows', 'Network', 'Processor', 'Memory', 'Disk', 'Volume', 'Program', 'Program64'
+# How many of a computer's records Get-SccmSpec reads at most, the latest first, for one with an inventory.
+$script:SccmSpecTries = 3
 
 # What runs in the link's runspace. The first time, the console's own steps: its module (it adds it to PSModulePath since
 # version 2111; before that, SMS_ADMIN_UI_PATH says where it is; $FakeModule stands in for it with the fake AD), then the
@@ -113,7 +123,7 @@ $script:SccmLinkScript = {
 function Get-SccmReadFunction {
     # The functions a read needs on a search runspace to ask SCCM, as Start-BackgroundRead's -Functions.
     'Invoke-SccmRead', 'New-SccmRunspace', 'Close-SccmRunspace', 'Get-SccmFailureReason', 'Test-SccmRefusal', 'Get-SccmDeadline', 'Get-SccmDomain', 'Test-SccmText', 'Get-ErrorKind', 'ConvertTo-SccmText', 'Get-SccmName', 'Find-SccmDevice', 'Select-SccmDevice',
-    'Read-SccmBatch', 'Get-SccmInventory', 'Get-SccmSummary', 'Get-SccmTest', 'Test-SccmServer'
+    'Read-SccmBatch', 'Get-SccmInventory', 'Get-SccmSpec', 'Get-SccmSummary', 'Get-SccmTest', 'Test-SccmServer'
 }
 
 function Get-SccmReadVariable {
@@ -123,6 +133,7 @@ function Get-SccmReadVariable {
         SccmRenewMinutes = $script:SccmRenewMinutes; ReadTimeout = $script:ReadTimeout
         SccmLink = $script:SccmLink; SccmStopping = $script:SccmStopping; SccmLinkScript = [string]$script:SccmLinkScript
         SccmDeviceColumns = $script:SccmDeviceColumns; SccmSummaryColumns = $script:SccmSummaryColumns; SccmSections = $script:SccmSections
+        SccmContentSections = $script:SccmContentSections; SccmSpecTries = $script:SccmSpecTries
         FakeSccmModule = $(if ($script:fakeADModule) { Join-Path (Split-Path $script:fakeADModule) 'FakeSccm.psm1' })
     }
 }
@@ -519,6 +530,62 @@ Read-SccmRow $Class $Column "ResourceID = $Id"
     $result
 }
 
+function Get-SccmSpec($Sccm, [string]$Name, [string]$Domain, [string]$Sid) {
+    # Caractéristiques from SCCM, for a computer that couldn't be read: which record is it (Select-SccmDevice's Answer,
+    # and its Reason when NotChecked), then that record's inventory (Get-SccmInventory's), when there's one. Ambiguous
+    # says how many records there are (Count) and reads the latest that has an inventory: the latest can be one SCCM
+    # only discovered, never inventoried. At most SccmSpecTries of them, while there's time; Latest: whether the one read
+    # (Device) is the latest, and when it isn't, LatestSkipped says why: Empty (read, nothing in it) or Unread (sections
+    # failed). NoInventory: none of those read has one, their content sections (SccmContentSections) read and empty, as
+    # SCCM keeps a computer it discovered but never had a client on; Inventory is then $null and Reason says so, and
+    # whether records were left unread. A content section that failed isn't empty: that inventory is kept, for its
+    # error to be seen, unless a later record has rows; one of which nothing was read only when it's the latest, as
+    # there's nothing else to show. $Domain: the DNS name of the computer's domain.
+    $until = Get-SccmDeadline
+    $find = Find-SccmDevice $Sccm -Name $Name -Until $until
+    $answer = Select-SccmDevice $find $Name -Sid $Sid -Domain $Domain
+    $result = @{ Answer = $answer.Answer; Reason = $answer.Reason; Device = $answer.Device; Count = @($answer.Candidates).Count; Latest = $true; LatestSkipped = ''; Inventory = $null }
+    if (-not $answer.Device) { return $result }
+    $failed = $null
+    $tried, $empty, $stopped, $skipped, $took = 0, 0, $false, '', 0
+    foreach ($device in @($answer.Candidates | Select-Object -First $script:SccmSpecTries)) {
+        # The first is read whatever the time: Get-SccmInventory then says it's up. Another only with time for a whole
+        # inventory, as long as the first took and never less than a query's own time: a query cut shorter would time
+        # out on Repère's end, blamed on SCCM, and take the runspace and its module with it.
+        if ($tried -and ($until - [datetime]::UtcNow).TotalSeconds -lt [math]::Max($took, $script:SccmQuerySeconds)) { $stopped = $true; break }
+        $tried++
+        $start = [datetime]::UtcNow
+        $inventory = Get-SccmInventory $Sccm ([int64]$device.ResourceID) -Until $until
+        if ($tried -eq 1) { $took = ([datetime]::UtcNow - $start).TotalSeconds }
+        $shown = @($script:SccmContentSections | ForEach-Object { $inventory[$_] } | Where-Object { $_ })
+        if (@($shown | Where-Object { $_.Read -and @($_.Rows | Where-Object { $_ }).Count }).Count) {
+            $result.Device, $result.Inventory, $result.Latest, $result.LatestSkipped = $device, $inventory, ($tried -eq 1), $skipped
+            return $result
+        }
+        $unread = @($shown | Where-Object { -not $_.Read }).Count
+        if ($tried -eq 1) { $skipped = if ($unread) { 'Unread' } else { 'Empty' } }
+        # Nothing read at all: SCCM isn't answering, and wouldn't for the next record either. The latest is still shown
+        # with its errors; a later one isn't, as if it had an inventory: the ones before it are said empty.
+        if ($unread -and $unread -eq $shown.Count) {
+            if ($tried -eq 1) { $failed = @{ Device = $device; Inventory = $inventory; Latest = $true; Skipped = '' } }
+            $stopped = $true
+            break
+        }
+        if ($unread -and -not $failed) { $failed = @{ Device = $device; Inventory = $inventory; Latest = $tried -eq 1; Skipped = $(if ($tried -gt 1) { $skipped }) } }
+        if (-not $unread) { $empty++ }
+    }
+    if ($failed) {
+        $result.Device, $result.Inventory, $result.Latest, $result.LatestSkipped = $failed.Device, $failed.Inventory, $failed.Latest, "$($failed.Skipped)"
+        return $result
+    }
+    $result.Answer = 'NoInventory'
+    $result.Reason = if ($result.Count -le 1) { Tr "SCCM n'a pas d'inventaire de cet ordinateur" }
+                     elseif ($stopped) { (Tr "SCCM n'a d'inventaire d'aucune fiche lue de cet ordinateur ({0} sur {1}) ; la suivante n'a pas pu être lue") -f $empty, $result.Count }
+                     elseif ($tried -eq $result.Count) { (Tr "SCCM n'a d'inventaire d'aucune des {0} fiches de cet ordinateur") -f $tried }
+                     else { (Tr "SCCM n'a d'inventaire d'aucune fiche lue de cet ordinateur ({0} sur {1})") -f $tried, $result.Count }
+    $result
+}
+
 function Get-SccmSummary {
     # The state of devices already found: Checked with its Devices (SccmSummaryColumns), or the Reason why not. By
     # ResourceID only: whether this class keeps to what the account may see isn't sure, but Find-SccmDevice's does.
@@ -589,11 +656,24 @@ function Format-SccmTest($Test, $Sccm) {
 }
 
 function Read-SccmSetting {
-    # The site saved in Paramètres, as the reads take it, or $null without one.
-    $saved = Read-JsonSetting $script:SettingsPath SccmSite, SccmServer
+    # The site saved in Paramètres, as the reads take it, or $null without one; with how often it inventories computers
+    # (InventoryDays), SccmInventoryDays unless a valid number is saved.
+    $saved = Read-JsonSetting $script:SettingsPath SccmSite, SccmServer, SccmInventoryDays
     if (-not $saved -or -not $saved.SccmSite -or -not $saved.SccmServer) { return }
     if (Get-SccmSettingProblem $saved.SccmSite $saved.SccmServer) { return }
-    @{ Site = ([string]$saved.SccmSite).ToUpperInvariant(); Server = [string]$saved.SccmServer }
+    $days = $script:SccmInventoryDays
+    # The text checked is the one converted: a value as JSON has it ([14], "14 ") would fail [int] by itself.
+    $text = "$($saved.SccmInventoryDays)".Trim()
+    if ($text -and -not (Get-SccmDaysProblem $text)) { $days = [int]$text }
+    @{ Site = ([string]$saved.SccmSite).ToUpperInvariant(); Server = [string]$saved.SccmServer; InventoryDays = $days }
+}
+
+function Get-SccmDaysProblem([string]$Days) {
+    # What's wrong with how often the site inventories computers, as typed in Paramètres: nothing when it's a number of
+    # days from 1 to 90, or nothing typed (SccmInventoryDays).
+    $number = 0
+    if (-not $Days.Trim()) { return }
+    if (-not [int]::TryParse($Days.Trim(), [ref]$number) -or $number -lt 1 -or $number -gt 90) { Tr 'Un nombre de jours, de 1 à 90.' }
 }
 
 function Get-SccmSettingProblem([string]$Site, [string]$Server) {

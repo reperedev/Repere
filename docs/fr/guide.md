@@ -83,6 +83,7 @@ Le matériel, Windows, le réseau, les écrans, la batterie, la station d'accuei
 - **Copier** (Ctrl+C) donne le rapport en texte, à coller dans un ticket ; **Exporter** l'enregistre en JSON et en texte dans `Documents\PCSpecs` ; **Actualiser** (F5) relit l'ordinateur.
 - Chaque section se replie ; **Tout réduire** ne garde que leur résumé.
 - La fenêtre s'ouvre une fois l'ordinateur joint. Éteint, il le dit en quelques secondes. Sans WinRM, Repère propose de l'activer le temps de la lecture (il est remis comme avant à la fermeture), ou de **Lire par DCOM**, plus lentement.
+- Avec un site dans **Paramètres › SCCM**, un ordinateur éteint, absent du DNS ou trop lent s'ouvre sur son dernier inventaire SCCM, sous un bandeau qui dit sa date : orange après deux inventaires manqués, rouge après quatre. Joint mais illisible (accès refusé), Repère propose **Lire depuis SCCM**. Les valeurs sont celles du jour de l'inventaire : l'utilisateur devient **Dernier utilisateur**, et les écrans, la batterie et la station d'accueil n'y sont pas. **Actualiser** (F5) essaie d'abord l'ordinateur, puis SCCM s'il n'est pas joint, ou si SCCM a déjà été choisi ou affiché dans cette fenêtre ; joint mais illisible, l'ordinateur affiche son erreur. Un inventaire sans date est en rouge. Si SCCM n'a pas l'ordinateur non plus, n'en a pas d'inventaire (il l'a découvert sans jamais l'inventorier) ou n'a pas pu être lu, la notification le dit, ou la fenêtre après **Lire depuis SCCM** ou **Actualiser**.
 
 ### Prendre la main
 
@@ -144,7 +145,7 @@ Le bouton **Paramètres**, en haut à droite, a ces pages :
 - **Déplacer vers** : les OU proposées pour déplacer un ordinateur.
 - **Redémarrage** : le délai et le message proposés par **Redémarrer…**.
 - **Mots de passe** : un mot de passe généré, ou toujours le même mot de passe temporaire, gardé chiffré pour votre compte Windows.
-- **SCCM** : le code du site et le serveur où **Prochain nom…** vérifie, avec **Tester**, qui dit si le site répond, par quel serveur, et si l'inventaire de cet ordinateur est lisible.
+- **SCCM** : le code du site et le serveur où **Prochain nom…** vérifie et où **Caractéristiques** lit l'inventaire, tous les combien le site inventorie les ordinateurs (7 jours par défaut), et **Tester**, qui dit si le site répond, par quel serveur, et si l'inventaire de cet ordinateur est lisible.
 - **Raccourcis** : la liste des raccourcis clavier.
 
 Tout s'enregistre sans bouton : en quittant une case, en changeant de page ou en fermant la fenêtre.
